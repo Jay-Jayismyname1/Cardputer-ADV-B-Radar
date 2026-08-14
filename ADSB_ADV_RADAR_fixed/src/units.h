@@ -29,4 +29,11 @@ namespace Units {
 
     // Nur das Einheiten-Kürzel ("ft" / "m") für Höhenangaben.
     const char* altSuffix();
+
+    // Full unit names ("Kilometers" / "Nautical Miles" / "Statute Miles",
+    // "Feet" / "Meters") for UI spots with room to spell it out, e.g. the
+    // Units selection screen. Everywhere else (HUD, range scale, Prox Beep
+    // screen) should keep using the short suffixes above.
+    const char* distFullName();
+    const char* altFullName();
 }

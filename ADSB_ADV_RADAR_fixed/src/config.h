@@ -26,6 +26,13 @@ namespace Config {
     constexpr uint32_t ALERT_RETRIGGER_COOLDOWN_MS = 30000;
     constexpr uint16_t ALERT_TONE_HZ = 2400;
     constexpr uint16_t ALERT_TONE_MS = 180;
+    // How many aircraft newly in range on one scan can each get their own
+    // beep, hard-capped so a busy approach corridor can't turn into a
+    // continuous buzz. Beeps are queued and played one per tick (see
+    // ProximityAlert::tick()) rather than all at once, so this many tones
+    // land ALERT_BEEP_GAP_MS apart instead of overlapping.
+    constexpr uint8_t MAX_ALERT_BEEPS = 5;
+    constexpr uint32_t ALERT_BEEP_GAP_MS = 250;
 
     constexpr uint8_t MAX_TRACKED_AIRCRAFT = 40;
 

@@ -63,4 +63,16 @@ const char* altSuffix() {
     return unitAlt == Altitude::Meters ? "m" : "ft";
 }
 
+const char* distFullName() {
+    switch (unit) {
+        case Distance::NauticalMiles: return "Nautical Miles";
+        case Distance::Miles:         return "Statute Miles";
+        default:                       return "Kilometers";
+    }
+}
+
+const char* altFullName() {
+    return unitAlt == Altitude::Meters ? "Meters" : "Feet";
+}
+
 }

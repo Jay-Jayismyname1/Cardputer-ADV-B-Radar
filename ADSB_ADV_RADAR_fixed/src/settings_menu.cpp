@@ -678,10 +678,13 @@ void render() {
     }
 
     if (inUnitsSubscreen) {
+        // Spelled out in full here (this screen has the room for it) -
+        // everywhere else that shows units (HUD, range scale, Prox Beep)
+        // keeps the short suffix instead.
         char row0[32];
-        snprintf(row0, sizeof(row0), " Distance: %s", Units::distSuffix());
+        snprintf(row0, sizeof(row0), " Distance: %s", Units::distFullName());
         char row1[32];
-        snprintf(row1, sizeof(row1), " Altitude: %s", Units::altSuffix());
+        snprintf(row1, sizeof(row1), " Altitude: %s", Units::altFullName());
 
         const char* rows[UNITS_SUB_ROWS] = { row0, row1 };
         renderSubscreenRows(d, "Units", rows, UNITS_SUB_ROWS, unitsSubSelected,

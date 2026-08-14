@@ -350,12 +350,15 @@ void loop() {
                                 AircraftTable::validCount() > 0 ? (int)selectedIndex : -1);
     }
 
-    // The audible proximity beep is owned by ProximityAlert::checkAndAlert()
-    // (called above, once per fetch), which is gated on the user's
-    // configured max distance/height. NeoPixel flashing below is purely
-    // visual - it must not also trigger a beep here, or an aircraft inside
-    // the LED's fixed 2 km "visual" zone would beep even when it's outside
-    // the user's configured thresholds.
+    // The audible proximity beep is owned by ProximityAlert - checkAndAlert()
+    // (called above, once per fetch) queues up to one beep per newly
+    // in-range aircraft (capped), and tick() here drains that queue one
+    // beep at a time so several qualifying aircraft don't stall the render
+    // loop with back-to-back blocking tones. NeoPixel flashing below is
+    // purely visual - it must not also trigger a beep here, or an aircraft
+    // inside the LED's fixed 2 km "visual" zone would beep even when it's
+    // outside the user's configured thresholds.
+    ProximityAlert::tick(now);
     NeopixelStatus::tick(now);
 
     if (screenMode == ScreenMode::Radar) {

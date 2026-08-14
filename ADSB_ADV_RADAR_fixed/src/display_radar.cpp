@@ -3,6 +3,7 @@
 #include "config.h"
 #include "units.h"
 #include <M5Cardputer.h>
+#include <Preferences.h>
 
 namespace DisplayRadar {
 
@@ -12,6 +13,7 @@ namespace {
     float sweepAngleDeg = 0.0f;
     constexpr float SWEEP_DEGREES_PER_SEC = 90.0f;
 
+    Preferences prefs;
     uint8_t rangeIndex = Config::DEFAULT_RANGE_INDEX;
 
     uint16_t altitudeColor(int32_t altFt) {
@@ -31,16 +33,21 @@ namespace {
         radarSprite.drawFastHLine(centerX - outerRadiusPx, centerY, outerRadiusPx * 2, TFT_DARKGREEN);
         radarSprite.drawFastVLine(centerX, centerY - outerRadiusPx, outerRadiusPx * 2, TFT_DARKGREEN);
 
-        // Heading ring - numeric bearing labels at 90-degree intervals only.
+        // Heading ring - only E/W at the sides now. N/S (top/bottom) were
+        // dropped so the circle can use the vertical space they used to
+        // reserve (see the smaller margin in init()) - screen is wider
+        // than it is tall, so the horizontal E/W labels were never the
+        // binding constraint on radius anyway.
         radarSprite.setTextColor(TFT_DARKGREEN);
         radarSprite.setTextDatum(middle_center);
-        for (int deg = 0; deg < 360; deg += 90) {
-            double rad = deg * DEG_TO_RAD;
+        constexpr struct { int deg; const char* label; } COMPASS_POINTS[] = {
+            { 90, "E" }, { 270, "W" }
+        };
+        for (const auto& cp : COMPASS_POINTS) {
+            double rad = cp.deg * DEG_TO_RAD;
             int16_t lx = centerX + (outerRadiusPx + 10) * sin(rad);
             int16_t ly = centerY - (outerRadiusPx + 10) * cos(rad);
-            char label[4];
-            snprintf(label, sizeof(label), "%d", deg);
-            radarSprite.drawString(label, lx, ly);
+            radarSprite.drawString(cp.label, lx, ly);
         }
     }
 
@@ -162,23 +169,31 @@ namespace {
             char distBuf[12];
             Units::formatDistance(a.distanceKm, distBuf, sizeof(distBuf));
             char altBuf[16];
+            // Vertical speed follows the same ft/m choice as altitude,
+            // rather than staying hardcoded to ft/min regardless of it.
+            char vsBuf[16];
             if (Units::currentAltitude() == Units::Altitude::Meters) {
                 snprintf(altBuf, sizeof(altBuf), "%.0fm", UnitMath::ftToMeters((float)a.altBaroFt));
+                snprintf(vsBuf, sizeof(vsBuf), "%+.0fm/min", UnitMath::ftToMeters((float)a.vertRateFtMin));
             } else {
                 snprintf(altBuf, sizeof(altBuf), "%ldft", (long)a.altBaroFt);
+                snprintf(vsBuf, sizeof(vsBuf), "%+dfpm", a.vertRateFtMin);
             }
             char line2[64];
-            snprintf(line2, sizeof(line2), "%s  ALT %s  VS %+dfpm  HDG %03.0f",
-                     distBuf, altBuf, a.vertRateFtMin, a.headingDeg);
+            snprintf(line2, sizeof(line2), "%s  ALT %s  VS %s  HDG %03.0f",
+                     distBuf, altBuf, vsBuf, a.headingDeg);
             radarSprite.drawString(line2, 4, panelY + 16);
 
+            // Ground speed is always shown in knots - the native ADS-B/
+            // aviation unit, same treatment as VS staying in ft/min - it
+            // isn't affected by the Distance unit toggle.
             char line3[64];
             if (a.estSeats > 0) {
-                snprintf(line3, sizeof(line3), "%s  ~%u seats (est.)",
-                         a.typeCode[0] ? a.typeCode : "TYPE?", a.estSeats);
+                snprintf(line3, sizeof(line3), "%s  SPD %.0fkt  ~%u seats (est.)",
+                         a.typeCode[0] ? a.typeCode : "TYPE?", a.groundSpeedKt, a.estSeats);
             } else {
-                snprintf(line3, sizeof(line3), "%s  seats: n/a",
-                         a.typeCode[0] ? a.typeCode : "TYPE?");
+                snprintf(line3, sizeof(line3), "%s  SPD %.0fkt  seats: n/a",
+                         a.typeCode[0] ? a.typeCode : "TYPE?", a.groundSpeedKt);
             }
             radarSprite.drawString(line3, 4, panelY + 28);
         }
@@ -237,9 +252,23 @@ namespace {
 void init() {
     centerX = M5Cardputer.Display.width() / 2;
     centerY = (M5Cardputer.Display.height() - 42) / 2; // leave room for HUD strip at bottom
-    outerRadiusPx = min(centerX, centerY) - 14;
+    // centerY (not centerX) is the binding constraint here on this wide,
+    // short display - it used to need a bigger margin to leave room for
+    // the N/S labels drawn directly above/below the circle. Those are
+    // gone now (see drawRadarBase() - only E/W remain, on the horizontal
+    // axis where centerX leaves far more headroom), so the margin only
+    // needs to keep the ring off the very top/bottom edge.
+    constexpr int16_t RADAR_MARGIN_PX = 4;
+    outerRadiusPx = min(centerX, centerY) - RADAR_MARGIN_PX;
     radarSprite.createSprite(M5Cardputer.Display.width(), M5Cardputer.Display.height());
     radarSprite.setTextFont(1);
+
+    // Same "adsb_radar" NVS namespace as every other setting - this one
+    // was previously missed, so the zoom level silently reset to
+    // DEFAULT_RANGE_INDEX (25km) on every reboot instead of persisting.
+    prefs.begin("adsb_radar", false);
+    rangeIndex = prefs.getUChar("rangeIdx", Config::DEFAULT_RANGE_INDEX);
+    if (rangeIndex >= Config::RANGE_STEP_COUNT) rangeIndex = Config::DEFAULT_RANGE_INDEX;
 }
 
 void tickSweep(uint32_t deltaMs) {
@@ -249,6 +278,7 @@ void tickSweep(uint32_t deltaMs) {
 
 void cycleRange() {
     rangeIndex = (rangeIndex + 1) % Config::RANGE_STEP_COUNT;
+    prefs.putUChar("rangeIdx", rangeIndex);
 }
 
 float currentRangeKm() {
