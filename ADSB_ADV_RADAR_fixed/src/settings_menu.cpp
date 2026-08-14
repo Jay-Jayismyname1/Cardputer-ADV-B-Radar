@@ -37,6 +37,31 @@ namespace {
 
     void tone(uint16_t hz, uint16_t ms) { M5Cardputer.Speaker.tone(hz, ms); }
 
+    // Every sub-screen/entry-mode in this file re-checks the same handful
+    // of control keys out of the raw hidKeys/chars arrays handleWord() gets
+    // each call. Scanning all four unconditionally is a handful of byte
+    // comparisons over at most ~16 elements either way, so one shared scan
+    // is simpler than parameterizing which flags each caller actually needs.
+    struct Keys {
+        bool enter = false;
+        bool esc = false;
+        bool backspace = false;
+        bool backtick = false; // the actual "close/cancel" key on this board - see HID_ESC's note above
+    };
+
+    Keys scanKeys(const uint8_t* hidKeys, uint8_t hidKeyCount, const char* chars, uint8_t count) {
+        Keys k;
+        for (uint8_t i = 0; i < hidKeyCount; i++) {
+            if (hidKeys[i] == HID_ENTER) k.enter = true;
+            if (hidKeys[i] == HID_ESC) k.esc = true;
+            if (hidKeys[i] == HID_BACKSPACE) k.backspace = true;
+        }
+        for (uint8_t i = 0; i < count; i++) {
+            if (chars[i] == '`') k.backtick = true;
+        }
+        return k;
+    }
+
     enum class Item : uint8_t { Wifi = 0, Location, DataSource, Units, ProxBeep, DisplayBrightness, RadarRotation, LedBrightness, Volume, Logbook, Count };
     Item selected = Item::Wifi;
 
@@ -258,14 +283,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         uint8_t& len = (manualEntryField == 0) ? manualLatLen : manualLonLen;
         constexpr uint8_t bufCap = 16;
 
-        bool hasEnter = false, hasEsc = false, hasBackspace = false;
-        for (uint8_t i = 0; i < hidKeyCount; i++) {
-            if (hidKeys[i] == HID_ENTER) hasEnter = true;
-            if (hidKeys[i] == HID_ESC) hasEsc = true;
-            if (hidKeys[i] == HID_BACKSPACE) hasBackspace = true;
-        }
-        bool hasBacktick = false;
-        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+        Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+        bool hasEnter = keys.enter, hasEsc = keys.esc, hasBackspace = keys.backspace, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) { // cancel, discard edits
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -310,14 +329,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
     }
 
     if (inRotationManualEntry) {
-        bool hasEnter = false, hasEsc = false, hasBackspace = false;
-        for (uint8_t i = 0; i < hidKeyCount; i++) {
-            if (hidKeys[i] == HID_ENTER) hasEnter = true;
-            if (hidKeys[i] == HID_ESC) hasEsc = true;
-            if (hidKeys[i] == HID_BACKSPACE) hasBackspace = true;
-        }
-        bool hasBacktick = false;
-        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+        Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+        bool hasEnter = keys.enter, hasEsc = keys.esc, hasBackspace = keys.backspace, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) { // cancel, discard edits
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -354,14 +367,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
     }
 
     if (inHostTextEntry) {
-        bool hasEnter = false, hasEsc = false, hasBackspace = false;
-        for (uint8_t i = 0; i < hidKeyCount; i++) {
-            if (hidKeys[i] == HID_ENTER) hasEnter = true;
-            if (hidKeys[i] == HID_ESC) hasEsc = true;
-            if (hidKeys[i] == HID_BACKSPACE) hasBackspace = true;
-        }
-        bool hasBacktick = false;
-        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+        Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+        bool hasEnter = keys.enter, hasEsc = keys.esc, hasBackspace = keys.backspace, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) { // cancel, discard edits
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -395,14 +402,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
     }
 
     if (inPortEntry) {
-        bool hasEnter = false, hasEsc = false, hasBackspace = false;
-        for (uint8_t i = 0; i < hidKeyCount; i++) {
-            if (hidKeys[i] == HID_ENTER) hasEnter = true;
-            if (hidKeys[i] == HID_ESC) hasEsc = true;
-            if (hidKeys[i] == HID_BACKSPACE) hasBackspace = true;
-        }
-        bool hasBacktick = false;
-        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+        Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+        bool hasEnter = keys.enter, hasEsc = keys.esc, hasBackspace = keys.backspace, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) {
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -439,13 +440,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
     }
 
     if (inDataSourceSubscreen) {
-        bool hasEnter = false, hasEsc = false;
-        for (uint8_t i = 0; i < hidKeyCount; i++) {
-            if (hidKeys[i] == HID_ENTER) hasEnter = true;
-            if (hidKeys[i] == HID_ESC) hasEsc = true;
-        }
-        bool hasBacktick = false;
-        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+        Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+        bool hasEnter = keys.enter, hasEsc = keys.esc, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) {
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -521,14 +517,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         uint8_t savedCount = WifiMgr::savedNetworkCount();
         uint8_t totalRows = savedCount + 1; // last row = "+ Add network"
 
-        bool hasEnter = false, hasEsc = false, hasBackspace = false;
-        for (uint8_t i = 0; i < hidKeyCount; i++) {
-            if (hidKeys[i] == HID_ENTER) hasEnter = true;
-            if (hidKeys[i] == HID_ESC) hasEsc = true;
-            if (hidKeys[i] == HID_BACKSPACE) hasBackspace = true;
-        }
-        bool hasBacktick = false;
-        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+        Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+        bool hasEnter = keys.enter, hasEsc = keys.esc, hasBackspace = keys.backspace, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) {
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -581,16 +571,10 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
     }
 
     if (inLocationSubscreen) {
-        bool hasEnter = false, hasEsc = false;
-        for (uint8_t i = 0; i < hidKeyCount; i++) {
-            if (hidKeys[i] == HID_ENTER) hasEnter = true;
-            if (hidKeys[i] == HID_ESC) hasEsc = true;
-        }
-        bool hasBacktick = false, hasM = false;
-        for (uint8_t i = 0; i < count; i++) {
-            if (chars[i] == '`') hasBacktick = true;
-            if (chars[i] == 'm') hasM = true;
-        }
+        Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+        bool hasEnter = keys.enter, hasEsc = keys.esc, hasBacktick = keys.backtick;
+        bool hasM = false;
+        for (uint8_t i = 0; i < count; i++) if (chars[i] == 'm') hasM = true;
 
         if (hasEsc || hasBacktick) {
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -644,12 +628,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
     }
 
     if (inUnitsSubscreen) {
-        bool hasEsc = false;
-        for (uint8_t i = 0; i < hidKeyCount; i++) {
-            if (hidKeys[i] == HID_ESC) hasEsc = true;
-        }
-        bool hasBacktick = false;
-        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+        Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+        bool hasEsc = keys.esc, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) {
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -677,12 +657,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
     }
 
     if (inProxBeepSubscreen) {
-        bool hasEsc = false;
-        for (uint8_t i = 0; i < hidKeyCount; i++) {
-            if (hidKeys[i] == HID_ESC) hasEsc = true;
-        }
-        bool hasBacktick = false;
-        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+        Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+        bool hasEsc = keys.esc, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) {
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -736,15 +712,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         return;
     }
 
-    bool hasEnter = false, hasEsc = false;
-    for (uint8_t i = 0; i < hidKeyCount; i++) {
-        if (hidKeys[i] == HID_ENTER) hasEnter = true;
-        if (hidKeys[i] == HID_ESC) hasEsc = true;
-    }
-    bool hasBacktick = false;
-    for (uint8_t i = 0; i < count; i++) {
-        if (chars[i] == '`') hasBacktick = true;
-    }
+    Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
+    bool hasEnter = keys.enter, hasEsc = keys.esc, hasBacktick = keys.backtick;
 
     if (hasEsc || hasBacktick) { tone(TONE_CLOSE_HZ, TONE_CLOSE_MS); done = true; return; }
 
