@@ -35,7 +35,11 @@ namespace {
     constexpr uint16_t TONE_CLOSE_HZ   = 700;
     constexpr uint16_t TONE_CLOSE_MS   = 45;
 
-    void tone(uint16_t hz, uint16_t ms) { M5Cardputer.Speaker.tone(hz, ms); }
+    // Routed through VolumeControl::keyBeep() (not M5Cardputer.Speaker.tone()
+    // directly) so every navigation/adjust/confirm/close sound in this menu
+    // automatically respects the Key Beep setting, with no per-call checks
+    // needed here.
+    void tone(uint16_t hz, uint16_t ms) { VolumeControl::keyBeep(hz, ms); }
 
     // Every sub-screen/entry-mode in this file re-checks the same handful
     // of control keys out of the raw hidKeys/chars arrays handleWord() gets
@@ -62,7 +66,7 @@ namespace {
         return k;
     }
 
-    enum class Item : uint8_t { Wifi = 0, Location, DataSource, Units, ProxBeep, DisplayBrightness, RadarRotation, LedBrightness, Volume, Logbook, Count };
+    enum class Item : uint8_t { Wifi = 0, Location, DataSource, Units, ProxBeep, KeyBeep, DisplayBrightness, RadarRotation, LedBrightness, Volume, Logbook, Count };
     Item selected = Item::Wifi;
 
     // How many item rows are scrolled past the top of the visible list -
@@ -149,7 +153,11 @@ namespace {
     const char* dataSourceLabel(AdsbClient::DataSource src) {
         switch (src) {
             case AdsbClient::DataSource::AdsbLol:       return "adsb.lol";
-            case AdsbClient::DataSource::AirplanesLive: return "airplanes.live";
+            // "airplanes.live" (14 chars) doesn't fit next to "Data Source: "
+            // on the main list row at any of this menu's text sizes without
+            // overflowing the 240px sprite width - shortened for display
+            // only, this doesn't touch the actual host used to fetch data.
+            case AdsbClient::DataSource::AirplanesLive: return "planes.live";
             case AdsbClient::DataSource::CustomTar1090: return "Custom";
             default:                                     return "adsb.fi";
         }
@@ -216,7 +224,7 @@ namespace {
         if (LocationManager::hasManualLocation()) {
             LocationManager::getManualLocation(lat, lon);
             double val = (field == 0) ? lat : lon;
-            manualFieldLen = snprintf(manualFieldBuf, sizeof(manualFieldBuf), "%.4f", val);
+            manualFieldLen = snprintf(manualFieldBuf, sizeof(manualFieldBuf), "%.6f", val);
         } else {
             manualFieldBuf[0] = '\0';
             manualFieldLen = 0;
@@ -619,7 +627,16 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 locationSubSelected = (locationSubSelected + 1) % rowCount;
                 tone(TONE_NAV_HZ, TONE_NAV_MS);
             } else if (chars[i] == '/' || chars[i] == ',') { // adjust selected row
-                if (locationSubSelected == LOCATION_ROW_SECOND) {
+                if (locationSubSelected == LOCATION_ROW_TOGGLE) {
+                    // Boolean toggle - same as Enter, both directions just
+                    // flip it (same convention Prox Beep's Beep on/off row
+                    // uses for ,/.).
+                    LocationManager::setGpsEnabled(!gpsOn);
+                    gpsOn = LocationManager::isGpsEnabled();
+                    uint8_t newCount = locationRowCount();
+                    if (locationSubSelected >= newCount) locationSubSelected = newCount - 1;
+                    tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
+                } else if (locationSubSelected == LOCATION_ROW_SECOND) {
                     if (gpsOn) {
                         LocationManager::cycleGpsPinPair();
                     } else {
@@ -647,13 +664,20 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 // range.
                 uint8_t newCount = locationRowCount();
                 if (locationSubSelected >= newCount) locationSubSelected = newCount - 1;
-            } else if (!gpsOn && locationSubSelected == LOCATION_ROW_SECOND) {
+            } else if (locationSubSelected == LOCATION_ROW_SECOND) {
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
-                bool nowManual = LocationManager::sourcePreference() == LocationManager::SourcePref::Manual;
-                LocationManager::setSourceOverride(nowManual ? LocationManager::SourcePref::Auto
-                                                               : LocationManager::SourcePref::Manual);
-                uint8_t newCount = locationRowCount();
-                if (locationSubSelected >= newCount) locationSubSelected = newCount - 1;
+                if (gpsOn) {
+                    // Cycling isn't boolean, but the same "Enter does what
+                    // ,/. does" rule still applies - previously only ,/.
+                    // could advance the Pin selection here.
+                    LocationManager::cycleGpsPinPair();
+                } else {
+                    bool nowManual = LocationManager::sourcePreference() == LocationManager::SourcePref::Manual;
+                    LocationManager::setSourceOverride(nowManual ? LocationManager::SourcePref::Auto
+                                                                   : LocationManager::SourcePref::Manual);
+                    uint8_t newCount = locationRowCount();
+                    if (locationSubSelected >= newCount) locationSubSelected = newCount - 1;
+                }
             } else if (!gpsOn && locationSubSelected == LOCATION_ROW_LAT) {
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
                 startManualFieldEntry(0);
@@ -667,7 +691,7 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
 
     if (inUnitsSubscreen) {
         Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
-        bool hasEsc = keys.esc, hasBacktick = keys.backtick;
+        bool hasEnter = keys.enter, hasEsc = keys.esc, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) {
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -691,12 +715,22 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
             }
         }
+
+        if (hasEnter) {
+            // Same cycle as ,/. above - previously Enter did nothing here.
+            if (unitsSubSelected == 0) {
+                Units::toggleDistance();
+            } else {
+                Units::toggleAltitude();
+            }
+            tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+        }
         return;
     }
 
     if (inProxBeepSubscreen) {
         Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
-        bool hasEsc = keys.esc, hasBacktick = keys.backtick;
+        bool hasEnter = keys.enter, hasEsc = keys.esc, hasBacktick = keys.backtick;
 
         if (hasEsc || hasBacktick) {
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -747,6 +781,14 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
             }
         }
+
+        // Only the Beep row (2) is boolean - Max Distance/Height (0/1) are
+        // sliders, same as Display/LED Brightness and Volume on the main
+        // list, which don't respond to Enter either.
+        if (hasEnter && proxBeepSubSelected == 2) {
+            ProximityAlert::setBeepEnabled(!ProximityAlert::isBeepEnabled());
+            tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+        }
         return;
     }
 
@@ -781,6 +823,9 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 case Item::Volume:
                     VolumeControl::increase();
                     break;
+                case Item::KeyBeep:
+                    VolumeControl::setKeyBeepEnabled(!VolumeControl::isKeyBeepEnabled());
+                    break;
                 case Item::Logbook:
                     FlightLogbook::setEnabled(!FlightLogbook::isEnabled());
                     break;
@@ -803,6 +848,9 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                     break;
                 case Item::Volume:
                     VolumeControl::decrease();
+                    break;
+                case Item::KeyBeep:
+                    VolumeControl::setKeyBeepEnabled(!VolumeControl::isKeyBeepEnabled());
                     break;
                 case Item::Logbook:
                     FlightLogbook::setEnabled(!FlightLogbook::isEnabled());
@@ -845,15 +893,33 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 inProxBeepSubscreen = true;
                 proxBeepSubSelected = 0;
                 break;
+            case Item::KeyBeep:
+                // Same as ,/. above.
+                VolumeControl::setKeyBeepEnabled(!VolumeControl::isKeyBeepEnabled());
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                break;
+            case Item::Logbook:
+                // Boolean toggle - same as ,/. above, both directions just
+                // flip it. Previously Enter did nothing here even though it
+                // toggles every other boolean setting in this menu.
+                FlightLogbook::setEnabled(!FlightLogbook::isEnabled());
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                break;
             default: break;
         }
     }
 }
 
 namespace {
-    // Row text is drawn larger than the title/footer for readability - 1.5x
-    // is the largest size that still keeps the longest real row (" Distance:
-    // Nautical Miles", 25 chars) under the 240px sprite width.
+    // The one text size used for every title and every primary line of
+    // content across all of Settings - main list, every sub-screen, and
+    // every value-entry screen - so nothing reads as smaller/less important
+    // than anything else. 1.5x is the largest size that still keeps every
+    // real title/row (longest: " Distance: Nautical Miles", 25 chars) under
+    // the 240px sprite width. Footer hints and secondary info lines
+    // (coordinates, AMSL note, connection test result) deliberately stay at
+    // plain size 1 - several of those footer strings (e.g. Radar Rotation's
+    // ";/.=move ,//=adjust m=exact", 27 chars) don't fit even at 1.5.
     constexpr float kSubRowTextSize = 1.5f;
 
     // Shared row-list renderer for the sub-screens below - draws a title, a
@@ -872,14 +938,13 @@ namespace {
     int16_t renderSubscreenRows(M5Canvas& d, const char* title, const char* const* rows,
                                  uint8_t rowCount, uint8_t selectedRow, const char* footer) {
         d.fillScreen(TFT_BLACK);
-        d.setTextSize(1);
+        d.setTextSize(kSubRowTextSize);
         d.setTextDatum(top_left);
         d.setTextColor(TFT_GREEN);
         d.setCursor(4, 4);
         d.println(title);
         d.drawFastHLine(0, 20, d.width(), TFT_DARKGREEN);
 
-        d.setTextSize(kSubRowTextSize);
         int16_t y = 28;
         int16_t rowH = d.fontHeight() + 3;
         for (uint8_t i = 0; i < rowCount; i++) {
@@ -922,7 +987,7 @@ void render() {
 
     if (inWifiManage) {
         d.fillScreen(TFT_BLACK);
-        d.setTextSize(1);
+        d.setTextSize(kSubRowTextSize);
         d.setTextDatum(top_left);
         d.setTextColor(TFT_GREEN);
         d.setCursor(4, 4);
@@ -932,7 +997,7 @@ void render() {
         uint8_t savedCount = WifiMgr::savedNetworkCount();
         uint8_t totalRows = savedCount + 1;
         int16_t y = 28;
-        int16_t rowH = d.fontHeight() + 2;
+        int16_t rowH = d.fontHeight() + 3;
 
         if (savedCount == 0) {
             d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
@@ -945,7 +1010,7 @@ void render() {
             bool isSelected = (i == wifiManageSelected);
             if (isSelected) d.fillRect(0, y, d.width(), rowH, TFT_GREEN);
             d.setTextColor(isSelected ? TFT_BLACK : TFT_WHITE, isSelected ? TFT_GREEN : TFT_BLACK);
-            d.setCursor(4, y + 1);
+            d.setCursor(4, y + 2);
             if (i < savedCount) {
                 d.printf(" %s", WifiMgr::savedNetworkSsid(i).c_str());
             } else {
@@ -954,6 +1019,7 @@ void render() {
             y += rowH;
         }
 
+        d.setTextSize(1);
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
         d.setCursor(2, d.height() - d.fontHeight() - 1);
         d.print(";/.=move Ent=add Del=forget `=back");
@@ -964,20 +1030,23 @@ void render() {
 
     if (inManualLocationEntry) {
         d.fillScreen(TFT_BLACK);
-        d.setTextSize(1);
+        d.setTextSize(kSubRowTextSize);
         d.setTextDatum(top_left);
         d.setTextColor(TFT_GREEN);
         d.setCursor(4, 4);
         d.println(manualEntryField == 0 ? "Manual Latitude" : "Manual Longitude");
         d.drawFastHLine(0, 20, d.width(), TFT_DARKGREEN);
 
+        // Same enlarged size as the title/row list - this value is the
+        // entire point of the screen, so it shouldn't be the small size.
         d.setTextColor(TFT_BLACK, TFT_GREEN);
         d.setCursor(4, 28);
         d.printf(" %s_ \n", manualFieldBuf);
 
+        d.setTextSize(1);
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-        d.setCursor(4, 48);
-        d.println(manualEntryField == 0 ? "Degrees, -90 to 90" : "Degrees, -180 to 180");
+        d.setCursor(4, 52);
+        d.println(manualEntryField == 0 ? "-90 to 90, up to 6 decimals" : "-180 to 180, up to 6 decimals");
         d.println("Enter: set  Del: back  `: cancel");
 
         d.pushSprite(0, 0);
@@ -986,7 +1055,7 @@ void render() {
 
     if (inRotationManualEntry) {
         d.fillScreen(TFT_BLACK);
-        d.setTextSize(1);
+        d.setTextSize(kSubRowTextSize);
         d.setTextDatum(top_left);
         d.setTextColor(TFT_GREEN);
         d.setCursor(4, 4);
@@ -997,8 +1066,9 @@ void render() {
         d.setCursor(4, 28);
         d.printf(" %s_ \n", rotationBuf);
 
+        d.setTextSize(1);
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-        d.setCursor(4, 48);
+        d.setCursor(4, 52);
         d.println("Degrees, 0-359");
         d.println("Enter: set  Del: back  `: cancel");
 
@@ -1008,7 +1078,7 @@ void render() {
 
     if (inHostTextEntry) {
         d.fillScreen(TFT_BLACK);
-        d.setTextSize(1);
+        d.setTextSize(kSubRowTextSize);
         d.setTextDatum(top_left);
         d.setTextColor(TFT_GREEN);
         d.setCursor(4, 4);
@@ -1019,8 +1089,9 @@ void render() {
         d.setCursor(4, 28);
         d.printf(" %s_ \n", hostBuf);
 
+        d.setTextSize(1);
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-        d.setCursor(4, 48);
+        d.setCursor(4, 52);
         d.println("Hostname or IP, e.g. 192.168.0.120");
         d.println("Enter: set  Del: back  `: cancel");
 
@@ -1030,7 +1101,7 @@ void render() {
 
     if (inPortEntry) {
         d.fillScreen(TFT_BLACK);
-        d.setTextSize(1);
+        d.setTextSize(kSubRowTextSize);
         d.setTextDatum(top_left);
         d.setTextColor(TFT_GREEN);
         d.setCursor(4, 4);
@@ -1041,8 +1112,9 @@ void render() {
         d.setCursor(4, 28);
         d.printf(" %s_ \n", portBuf);
 
+        d.setTextSize(1);
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-        d.setCursor(4, 48);
+        d.setCursor(4, 52);
         d.println("Digits only, 1-65535");
         d.println("Enter: set  Del: back  `: cancel");
 
@@ -1128,8 +1200,8 @@ void render() {
             bool haveManual = LocationManager::hasManualLocation();
             if (haveManual) LocationManager::getManualLocation(mLat, mLon);
             if (haveManual) {
-                snprintf(row2, sizeof(row2), " Lat: %.4f", mLat);
-                snprintf(row3, sizeof(row3), " Lon: %.4f", mLon);
+                snprintf(row2, sizeof(row2), " Lat: %.6f", mLat);
+                snprintf(row3, sizeof(row3), " Lon: %.6f", mLon);
             } else {
                 snprintf(row2, sizeof(row2), " Lat: (not set)");
                 snprintf(row3, sizeof(row3), " Lon: (not set)");
@@ -1220,7 +1292,10 @@ void render() {
     }
 
     d.fillScreen(TFT_BLACK);
-    d.setTextSize(1.7f);
+    // Same uniform size as every sub-screen's title/rows now - this used to
+    // be a bigger 1.7x specific to just this list, which is exactly the
+    // "everything a different size" inconsistency this whole pass fixes.
+    d.setTextSize(kSubRowTextSize);
     int16_t lineH = d.fontHeight();
 
     d.setTextDatum(top_left);
@@ -1290,6 +1365,9 @@ void render() {
             case Item::ProxBeep:
                 d.printf("Prox Beep: %s", ProximityAlert::isBeepEnabled() ? "On" : "Off");
                 break;
+            case Item::KeyBeep:
+                d.printf("Key Beep: %s", VolumeControl::isKeyBeepEnabled() ? "On" : "Off");
+                break;
             case Item::DisplayBrightness:
                 d.printf("Display: %d%%", displayBrightnessPercent);
                 break;
@@ -1329,9 +1407,13 @@ void render() {
 
     // Footer pinned to the bottom edge rather than relative to the item
     // list, so it can't collide with rows above even as row count/height
-    // changes.
+    // changes. Dropped to plain size 1, same as every sub-screen's footer -
+    // the longest footer string here (RadarRotation's ";/.=move ,//=adjust
+    // m=exact", 27 chars) doesn't fit at kSubRowTextSize without
+    // overflowing the sprite width, let alone the old 1.7x.
+    d.setTextSize(1);
     d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-    d.setCursor(2, d.height() - lineH - 1);
+    d.setCursor(2, d.height() - d.fontHeight() - 1);
     if (selected == Item::Wifi || selected == Item::Location ||
         selected == Item::DataSource || selected == Item::Units ||
         selected == Item::ProxBeep) {

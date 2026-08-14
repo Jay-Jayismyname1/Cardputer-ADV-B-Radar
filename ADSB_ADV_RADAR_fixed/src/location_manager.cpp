@@ -46,6 +46,18 @@ namespace {
         gpsSerialStarted = true;
     }
 
+    // Releases the UART peripheral and RX/TX pins entirely, rather than just
+    // leaving update() to stop draining it (which it already does via its
+    // own gpsEnabled check). There's no software-controlled power pin to
+    // this module - the header supplies it constant power regardless of
+    // what the ESP32 side does - so this is the most "off" a software
+    // toggle can make it: the ESP32 stops listening on those pins at all.
+    void stopGpsSerialIfNeeded() {
+        if (!gpsSerialStarted) return;
+        gpsSerial.end();
+        gpsSerialStarted = false;
+    }
+
     void persistLocation(double lat, double lon) {
         prefs.putDouble("homeLat", lat);
         prefs.putDouble("homeLon", lon);
@@ -246,6 +258,7 @@ void setGpsEnabled(bool enabled) {
                  : havePersisted ? Source::Persisted : Source::None;
         ipLookupDone = false;
         lastIpLookupAttemptMs = 0;
+        stopGpsSerialIfNeeded();
     }
 }
 

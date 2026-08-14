@@ -115,6 +115,12 @@ namespace {
 
     constexpr uint8_t HID_BACKSPACE = 0x2A;
 
+    // Same feel as the Settings menu's row-navigation tone (TONE_NAV_HZ/MS
+    // in settings_menu.cpp) - selecting a different aircraft here is the
+    // radar-screen equivalent of moving between rows in a list.
+    constexpr uint16_t TONE_SELECT_HZ = 1400;
+    constexpr uint16_t TONE_SELECT_MS = 25;
+
     void handleKeyboardRadar(const Keyboard_Class::KeysState& status) {
         for (auto k : status.hid_keys) {
             if (k == HID_BACKSPACE) {
@@ -140,6 +146,10 @@ namespace {
         if (status.tab) {
             uint8_t count = AircraftTable::validCount();
             if (count > 0) selectedIndex = (selectedIndex + 1) % count;
+            // Only beep when the selection actually moved to a different
+            // aircraft - with a single aircraft on screen, "next" wraps
+            // back to itself and there's no real switch to confirm.
+            if (count > 1) VolumeControl::keyBeep(TONE_SELECT_HZ, TONE_SELECT_MS);
         }
     }
 }

@@ -7,7 +7,7 @@ No GPS or external modules are required, this works on Wifi with the adsb.fi API
 Controls:
 Tab - Cycles between flights on radar to view information
 
-Del - Opens up settings page to configure Wi-fi, Location, Units, Proximity Beep, Display brightness, LED Brightness, Volume for tone beeps, and the Flight Logbook
+Del - Opens up settings page to configure Wi-fi, Location, Units, Proximity Beep, Key Beep, Display brightness, LED Brightness, Volume for tone beeps, and the Flight Logbook
 
 Esc - Exits settings (also backs out of a settings sub-screen one level at a time)
 
@@ -18,10 +18,13 @@ Fn + arrow keys - Cycles between wifi networks
 Fn + Esc - Exits Wifi setup
 
 Settings sub-screens:
-- Location: toggle GPS on/off, cycle the GPS RX/TX pin pair while GPS is on, or (while GPS is off) switch between "IP" (coarse location from your internet connection) and "Manual" (a saved lat/lon you enter yourself, via the `m` key). Manual mode is sticky - once picked, it's remembered across reboots and won't get silently overwritten by an IP lookup.
+- Location: toggle Hardware GPS on/off. While it's on, cycle the GPS RX/TX pin pair and see the live fix (coordinates + satellite count, or "No lock" while searching). While it's off, pick an "Other Source" of IP (coarse location from your internet connection, shown below) or Manual - selecting Manual adds two more rows, Lat and Lon, each independently editable in place. Manual coordinates are stored separately from GPS/IP fixes, so switching to IP and back to Manual never loses what you entered.
 - Units: distance in km, nautical miles, or statute miles; altitude in feet or meters. Applies to the HUD, the range scale, and the Proximity Beep sub-screen.
 - Proximity Beep: a max distance and a max height, both using whatever units you picked above - a plane only triggers the beep once it's within *both*. The height filter is barometric altitude (AMSL), not height above ground. Emergency squawks (7500/7600/7700) always beep regardless of these thresholds.
 - Data Source: cycle between adsb.fi, adsb.lol, airplanes.live, or your own tar1090/readsb server (Custom). Custom needs a host/IP or hostname, port, and HTTP/HTTPS scheme; there's a "Test Connection" action that checks it's actually reachable and looks like a real readsb/tar1090 instance before you switch to it.
+- Key Beep: on/off toggle for the short UI-feedback tones the keyboard makes while navigating menus and switching between aircraft on the radar screen. Separate from the Proximity Beep alert, which always sounds regardless of this setting.
+
+In every sub-screen and value-entry screen, toggle/cycle rows (GPS on/off, Other Source, Data Source, Scheme, Units, Beep on/off) respond to both Enter and the `,`/`.` adjust keys; Enter opens a sub-screen or a text/number entry field where that's what the row actually does (e.g. Data Source's Host/Port, or Location's Lat/Lon).
 
 Features:
 Selecting flight blips will show Flight number, Flight reg, Airline, distance from flight (your chosen distance unit), Altitude (your chosen altitude unit), Verticle speed (VS), Heading (HDG), Airplane type and estimated seats (Estimated souls on board)
