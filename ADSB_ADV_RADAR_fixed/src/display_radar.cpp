@@ -16,6 +16,13 @@ namespace {
     float sweepAngleDeg = 0.0f;
     constexpr float SWEEP_DEGREES_PER_SEC = 90.0f;
 
+    // Bottom HUD strip height - shared between init()'s radar-circle sizing
+    // and drawHudPanel()'s own layout so the two can never drift out of
+    // sync. Trimmed from 3 lines' worth (42px) to 2 (30px) now that the
+    // FlightDetail screen carries the rest of the fields - the radar
+    // circle grows into the reclaimed space automatically via init().
+    constexpr int16_t HUD_PANEL_HEIGHT_PX = 30;
+
     Preferences prefs;
     uint8_t rangeIndex = Config::DEFAULT_RANGE_INDEX;
     uint16_t rotationDeg = 0; // 0 = North-up (default/unrotated)
@@ -166,9 +173,13 @@ namespace {
     void drawHudPanel(const Aircraft* list, uint8_t count, uint8_t selectedIndex,
                        bool wifiConnected, int batteryPct,
                        const char* locationLabel, int lastHttpCode) {
-        // Bottom strip: detail on the closest / selected aircraft
-        int16_t panelY = M5Cardputer.Display.height() - 42;
-        radarSprite.fillRect(0, panelY, M5Cardputer.Display.width(), 42, TFT_BLACK);
+        // Bottom strip: a deliberately terse 2-line summary of the closest/
+        // selected aircraft - everything else (airline, seats, bearing,
+        // coordinates, ...) lives on the full FlightDetail screen instead
+        // (Enter on a selected aircraft), which is what freed up the space
+        // this panel used to need for a 3rd line - see HUD_PANEL_HEIGHT_PX.
+        int16_t panelY = M5Cardputer.Display.height() - HUD_PANEL_HEIGHT_PX;
+        radarSprite.fillRect(0, panelY, M5Cardputer.Display.width(), HUD_PANEL_HEIGHT_PX, TFT_BLACK);
         radarSprite.drawFastHLine(0, panelY, M5Cardputer.Display.width(), TFT_DARKGREEN);
 
         radarSprite.setTextDatum(top_left);
@@ -180,19 +191,25 @@ namespace {
             const Aircraft& a = list[selectedIndex];
             bool emergency = a.isEmergencySquawk();
 
+            // Ground speed follows the same Distance unit as everything
+            // else (km/h, mph, or kt) rather than being its own separate
+            // setting - see Units::formatSpeed().
+            char spdBuf[16];
+            Units::formatSpeed(a.groundSpeedKt, spdBuf, sizeof(spdBuf));
+
             char line1[64];
             if (emergency) {
                 snprintf(line1, sizeof(line1), "EMERGENCY %s  SQUAWK %s",
                          a.callsign[0] ? a.callsign : a.hex, a.squawk);
             } else {
-                snprintf(line1, sizeof(line1), "%s  %s  %s",
+                snprintf(line1, sizeof(line1), "%s  %s  %s  SPD %s",
                          a.callsign[0] ? a.callsign : "-------",
                          a.reg[0] ? a.reg : "REG?",
-                         a.airlineName[0] ? a.airlineName : "");
+                         a.typeCode[0] ? a.typeCode : "TYPE?", spdBuf);
             }
             radarSprite.setTextColor(emergency ? TFT_RED : TFT_WHITE);
             radarSprite.drawString(line1, 4, panelY + 4);
-            radarSprite.setTextColor(TFT_WHITE); // reset for the lines below
+            radarSprite.setTextColor(TFT_WHITE); // reset for the line below
 
             char distBuf[12];
             Units::formatDistance(a.distanceKm, distBuf, sizeof(distBuf));
@@ -208,39 +225,28 @@ namespace {
                 snprintf(vsBuf, sizeof(vsBuf), "%+dfpm", a.vertRateFtMin);
             }
             char line2[64];
-            snprintf(line2, sizeof(line2), "%s  ALT %s  VS %s  HDG %03.0f",
-                     distBuf, altBuf, vsBuf, a.headingDeg);
+            snprintf(line2, sizeof(line2), "%s  ALT %s  VS %s",
+                     distBuf, altBuf, vsBuf);
             radarSprite.drawString(line2, 4, panelY + 16);
-
-            // Ground speed follows the same Distance unit as everything
-            // else (km/h, mph, or kt) rather than being its own separate
-            // setting - see Units::formatSpeed().
-            char spdBuf[16];
-            Units::formatSpeed(a.groundSpeedKt, spdBuf, sizeof(spdBuf));
-            char line3[64];
-            if (a.estSeats > 0) {
-                snprintf(line3, sizeof(line3), "%s  SPD %s  ~%u seats (est.)",
-                         a.typeCode[0] ? a.typeCode : "TYPE?", spdBuf, a.estSeats);
-            } else {
-                snprintf(line3, sizeof(line3), "%s  SPD %s  seats: n/a",
-                         a.typeCode[0] ? a.typeCode : "TYPE?", spdBuf);
-            }
-            radarSprite.drawString(line3, 4, panelY + 28);
         }
 
         int16_t screenW = M5Cardputer.Display.width();
 
         // Top-left: green WiFi status dot, GPS/location method label to its
-        // right, and the current ADS-B data source abbreviated on the line
-        // below (FI/LOL/LIVE/CSTM) - at a glance which feed is in use
-        // without having to open Settings.
+        // right, and the current ADS-B data source abbreviated (FI/LOL/
+        // LIVE/CSTM) right after it on the same line, in a dimmer color so
+        // it reads as secondary detail rather than competing with the
+        // location label - at a glance which feed is in use without having
+        // to open Settings.
         constexpr int16_t dotX = 8, dotY = 8, dotR = 4;
         radarSprite.fillCircle(dotX, dotY, dotR, wifiConnected ? TFT_GREEN : TFT_DARKGREEN);
         radarSprite.setTextDatum(middle_left);
         radarSprite.setTextColor(TFT_WHITE);
-        radarSprite.drawString(locationLabel, dotX + dotR + 6, dotY);
+        int16_t locX = dotX + dotR + 6;
+        radarSprite.drawString(locationLabel, locX, dotY);
+        int16_t locW = radarSprite.textWidth(locationLabel);
         radarSprite.setTextColor(TFT_DARKGREEN);
-        radarSprite.drawString(AdsbClient::currentDataSourceShortLabel(), dotX + dotR + 6, dotY + 12);
+        radarSprite.drawString(AdsbClient::currentDataSourceShortLabel(), locX + locW + 6, dotY);
 
         // Top-center: blinking "EMERGENCY" banner whenever any tracked
         // aircraft is squawking 7500/7600/7700 - shown regardless of
@@ -274,12 +280,16 @@ namespace {
         radarSprite.setTextDatum(middle_right);
         radarSprite.setTextColor(TFT_WHITE);
         radarSprite.drawString(countLabel, pillX - 6, pillY + pillH / 2);
+        int16_t countW = radarSprite.textWidth(countLabel);
 
-        // Below the total count: how many of those aircraft currently
-        // satisfy the proximity beep predicate (same distance/height
-        // thresholds ProximityAlert::checkAndAlert() uses, or emergency) -
-        // a live "how many would beep right now" count, not just the ones
-        // that were newly in range on the last scan.
+        // To the left of the total count: how many of those aircraft
+        // currently satisfy the proximity beep predicate (same distance/
+        // height thresholds ProximityAlert::checkAndAlert() uses, or
+        // emergency) - a live "how many would beep right now" count, not
+        // just the ones that were newly in range on the last scan. Same
+        // row as the total count rather than below it, green reserved for
+        // this qualifying count alone so it reads as "these are the ones
+        // that matter" against the plain white total.
         uint8_t inBeepRangeCount = 0;
         for (uint8_t i = 0; i < count; i++) {
             if (!list[i].valid) continue;
@@ -293,7 +303,7 @@ namespace {
         char inRangeLabel[8];
         snprintf(inRangeLabel, sizeof(inRangeLabel), "(%u)", inBeepRangeCount);
         radarSprite.setTextColor(TFT_DARKGREEN);
-        radarSprite.drawString(inRangeLabel, pillX - 6, pillY + pillH / 2 + 12);
+        radarSprite.drawString(inRangeLabel, pillX - 6 - countW - 6, pillY + pillH / 2);
 
         // Range scale — bottom-left corner, just above the HUD panel divider.
         char rangeLabel[16];
@@ -306,7 +316,7 @@ namespace {
 
 void init() {
     centerX = M5Cardputer.Display.width() / 2;
-    centerY = (M5Cardputer.Display.height() - 42) / 2; // leave room for HUD strip at bottom
+    centerY = (M5Cardputer.Display.height() - HUD_PANEL_HEIGHT_PX) / 2; // leave room for HUD strip at bottom
     // centerY (not centerX) is the binding constraint here on this wide,
     // short display - it used to need a bigger margin to leave room for
     // the N/S labels drawn directly above/below the circle. Those are
