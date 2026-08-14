@@ -7,6 +7,8 @@ No GPS or external modules are required, this works on Wifi with the adsb.fi API
 Controls:
 Tab - Cycles between flights on radar to view information
 
+Enter - With a flight selected, opens a full-detail panel for it (adds airline, seat estimate, squawk, heading, bearing, and lat/lon on top of what's already in the HUD); Tab still cycles flights while it's open, Esc returns to the radar
+
 Del - Opens up settings page to configure Wi-fi, Location, Units, Proximity Beep, Key Beep, Display brightness, LED Brightness, Volume for tone beeps, and the Flight Logbook
 
 Esc - Exits settings (also backs out of a settings sub-screen one level at a time)
@@ -27,7 +29,7 @@ Settings sub-screens:
 In every sub-screen and value-entry screen, toggle/cycle rows (GPS on/off, Other Source, Data Source, Scheme, Units, Beep on/off) respond to both Enter and the `,`/`.` adjust keys; Enter opens a sub-screen or a text/number entry field where that's what the row actually does (e.g. Data Source's Host/Port, or Location's Lat/Lon).
 
 Features:
-Selecting flight blips will show Flight number, Flight reg, Airline, distance from flight (your chosen distance unit), Altitude (your chosen altitude unit), Verticle speed (VS), Heading (HDG), Airplane type and estimated seats (Estimated souls on board)
+Selecting flight blips shows a 2-line HUD summary: Flight number, Flight reg, Airplane type and Speed on the first line; distance from flight, Altitude and Verticle speed (VS) on the second (all in your chosen units) - press Enter for the full detail panel (see Controls above), which adds Airline, estimated seats (Estimated souls on board), Squawk, Heading (HDG), Bearing and coordinates.
 
 Configuration:
 On first boot, a folder will be created called "adsb_radar" in the root of your SD Card, to store aircraft types and airlines, in .csv files, these can be edited to add more to support other regions, but note that these are cached on boot so be mindful of file sizes, once updated, and uploaded onto the folder, these will automatically be loaded on boot, along with wifi credentials (while not secure) they are also saved onto SD card for convenience.
