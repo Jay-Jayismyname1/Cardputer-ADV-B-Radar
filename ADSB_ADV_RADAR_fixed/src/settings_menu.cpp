@@ -73,18 +73,18 @@ namespace {
     constexpr uint8_t LOCATION_SUB_ROWS = 2;
 
     // Data Source sub-screen: Source cycle (adsb.fi/adsb.lol/airplanes.live/
-    // Custom), host, port, scheme, and a Test Connection action. Host/port/
-    // scheme are only meaningful while Custom is selected, but editing them
-    // while a hosted API is active is harmless - they just won't be used
-    // until the user switches Source to Custom.
+    // Custom), then a Test Connection action always present at the end.
+    // Host/Port/Scheme only exist as rows at all while Custom is selected -
+    // they're meaningless for a hosted API, so they're hidden rather than
+    // just harmlessly editable. Row 0 is always Source; the last row
+    // (dataSourceRowCount()-1) is always Test - see dataSourceRowCount()/
+    // isCustomSelected() below for how the row count/meaning flexes.
     bool inDataSourceSubscreen = false;
     uint8_t dataSourceSubSelected = 0;
-    constexpr uint8_t DATASOURCE_SUB_ROWS = 5;
     constexpr uint8_t DATASOURCE_ROW_SOURCE = 0;
-    constexpr uint8_t DATASOURCE_ROW_HOST   = 1;
-    constexpr uint8_t DATASOURCE_ROW_PORT   = 2;
-    constexpr uint8_t DATASOURCE_ROW_SCHEME = 3;
-    constexpr uint8_t DATASOURCE_ROW_TEST   = 4;
+    constexpr uint8_t DATASOURCE_ROW_HOST   = 1; // Custom only
+    constexpr uint8_t DATASOURCE_ROW_PORT   = 2; // Custom only
+    constexpr uint8_t DATASOURCE_ROW_SCHEME = 3; // Custom only
 
     // Host is free-text (hostname or IP) - same printable-ASCII entry
     // pattern already used for the WiFi password field in
@@ -123,6 +123,22 @@ namespace {
             case AdsbClient::DataSource::AirplanesLive: return AdsbClient::DataSource::CustomTar1090;
             default:                                     return AdsbClient::DataSource::AdsbFi;
         }
+    }
+
+    bool isCustomSelected() {
+        return AdsbClient::currentDataSource() == AdsbClient::DataSource::CustomTar1090;
+    }
+
+    // 5 rows (Source, Host, Port, Scheme, Test) while Custom is selected;
+    // just 2 (Source, Test) for any hosted API, since Host/Port/Scheme are
+    // meaningless there. The Test row is always the last row, whichever
+    // that is - see dataSourceTestRow() below.
+    uint8_t dataSourceRowCount() {
+        return isCustomSelected() ? 5 : 2;
+    }
+
+    uint8_t dataSourceTestRow() {
+        return dataSourceRowCount() - 1;
     }
 
     // Units sub-screen: distance + altitude, each a simple cycle.
@@ -437,18 +453,27 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
             return;
         }
 
+        uint8_t rowCount = dataSourceRowCount();
+        uint8_t testRow = dataSourceTestRow();
+
         for (uint8_t i = 0; i < count; i++) {
             if (chars[i] == ';') {
-                dataSourceSubSelected = (dataSourceSubSelected + DATASOURCE_SUB_ROWS - 1) % DATASOURCE_SUB_ROWS;
+                dataSourceSubSelected = (dataSourceSubSelected + rowCount - 1) % rowCount;
                 tone(TONE_NAV_HZ, TONE_NAV_MS);
             } else if (chars[i] == '.') {
-                dataSourceSubSelected = (dataSourceSubSelected + 1) % DATASOURCE_SUB_ROWS;
+                dataSourceSubSelected = (dataSourceSubSelected + 1) % rowCount;
                 tone(TONE_NAV_HZ, TONE_NAV_MS);
             } else if (chars[i] == '/' || chars[i] == ',') {
                 if (dataSourceSubSelected == DATASOURCE_ROW_SOURCE) {
                     AdsbClient::setDataSource(nextDataSource(AdsbClient::currentDataSource()));
+                    // Row count/meaning may have just changed (e.g. leaving
+                    // Custom hides Host/Port/Scheme) - keep the selection
+                    // in range rather than pointing at a row that no
+                    // longer exists.
+                    uint8_t newCount = dataSourceRowCount();
+                    if (dataSourceSubSelected >= newCount) dataSourceSubSelected = newCount - 1;
                     tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
-                } else if (dataSourceSubSelected == DATASOURCE_ROW_SCHEME) {
+                } else if (isCustomSelected() && dataSourceSubSelected == DATASOURCE_ROW_SCHEME) {
                     AdsbClient::setCustomUseHttps(!AdsbClient::customUseHttps());
                     tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
                 }
@@ -458,17 +483,21 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         if (hasEnter) {
             if (dataSourceSubSelected == DATASOURCE_ROW_SOURCE) {
                 AdsbClient::setDataSource(nextDataSource(AdsbClient::currentDataSource()));
+                uint8_t newCount = dataSourceRowCount();
+                if (dataSourceSubSelected >= newCount) dataSourceSubSelected = newCount - 1;
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
-            } else if (dataSourceSubSelected == DATASOURCE_ROW_HOST) {
+            } else if (isCustomSelected() && dataSourceSubSelected == DATASOURCE_ROW_HOST) {
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
                 startHostEntry();
-            } else if (dataSourceSubSelected == DATASOURCE_ROW_PORT) {
+            } else if (isCustomSelected() && dataSourceSubSelected == DATASOURCE_ROW_PORT) {
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
                 startPortEntry();
-            } else if (dataSourceSubSelected == DATASOURCE_ROW_SCHEME) {
+            } else if (isCustomSelected() && dataSourceSubSelected == DATASOURCE_ROW_SCHEME) {
                 AdsbClient::setCustomUseHttps(!AdsbClient::customUseHttps());
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
-            } else if (dataSourceSubSelected == DATASOURCE_ROW_TEST) {
+            } else if (dataSourceSubSelected == testRow) {
+                // Always present, whatever source is currently selected -
+                // tests the hosted API in play, or the Custom config.
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
                 connTestState = ConnTestState::Testing;
                 // Force an immediate redraw so "Testing..." is visible
@@ -478,7 +507,7 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 // just look frozen for the whole test duration instead of
                 // showing what's happening.
                 render();
-                AdsbClient::ConnectionTestResult testResult = AdsbClient::testCustomConnection();
+                AdsbClient::ConnectionTestResult testResult = AdsbClient::testCurrentDataSource();
                 connTestState = testResult.ok ? ConnTestState::Ok : ConnTestState::Failed;
                 strncpy(connTestMsg, testResult.message, sizeof(connTestMsg) - 1);
                 connTestMsg[sizeof(connTestMsg) - 1] = '\0';
@@ -1005,30 +1034,37 @@ void render() {
     }
 
     if (inDataSourceSubscreen) {
+        bool isCustom = isCustomSelected();
+        uint8_t rowCount = dataSourceRowCount();
+
         char row0[32];
         snprintf(row0, sizeof(row0), " Source: %s",
                  dataSourceLabel(AdsbClient::currentDataSource()));
 
-        char row1[48];
-        const char* host = AdsbClient::customHost();
-        snprintf(row1, sizeof(row1), " Host: %s", host[0] ? host : "(not set)");
+        char row1[48], row2[32], row3[32];
+        const char* rows[5]; // max possible rows; only the first rowCount are used
+        rows[0] = row0;
 
-        char row2[32];
-        snprintf(row2, sizeof(row2), " Port: %u", AdsbClient::customPort());
+        if (isCustom) {
+            const char* host = AdsbClient::customHost();
+            snprintf(row1, sizeof(row1), " Host: %s", host[0] ? host : "(not set)");
+            snprintf(row2, sizeof(row2), " Port: %u", AdsbClient::customPort());
+            snprintf(row3, sizeof(row3), " Scheme: %s", AdsbClient::customUseHttps() ? "HTTPS" : "HTTP");
+            rows[1] = row1;
+            rows[2] = row2;
+            rows[3] = row3;
+            rows[4] = " Test Connection";
+        } else {
+            rows[1] = " Test Connection";
+        }
 
-        char row3[32];
-        snprintf(row3, sizeof(row3), " Scheme: %s", AdsbClient::customUseHttps() ? "HTTPS" : "HTTP");
-
-        char row4[32] = " Test Connection";
-
-        const char* rows[DATASOURCE_SUB_ROWS] = { row0, row1, row2, row3, row4 };
-        renderSubscreenRows(d, "Data Source", rows, DATASOURCE_SUB_ROWS, dataSourceSubSelected,
+        renderSubscreenRows(d, "Data Source", rows, rowCount, dataSourceSubSelected,
                              ";/.=move Ent/,//=set `=back");
 
         // Test result shown below the row list, same treatment as
         // Location's current-coordinates line and Prox Beep's AMSL note.
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-        d.setCursor(4, 28 + DATASOURCE_SUB_ROWS * (d.fontHeight() + 2) + 4);
+        d.setCursor(4, 28 + rowCount * (d.fontHeight() + 2) + 4);
         switch (connTestState) {
             case ConnTestState::Testing:
                 d.print(" Testing...");

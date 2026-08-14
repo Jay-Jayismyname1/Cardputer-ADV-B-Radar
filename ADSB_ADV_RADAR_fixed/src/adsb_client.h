@@ -30,6 +30,12 @@ namespace AdsbClient {
     void setDataSource(DataSource src);
     DataSource currentDataSource();
 
+    // Short (<=4 char) label for the HUD - "FI"/"LOL"/"LIVE"/"CSTM". Custom
+    // deliberately shows a fixed abbreviation rather than the actual host/IP -
+    // there isn't room on the HUD for that, and it isn't really "at a glance"
+    // information the way the others are.
+    const char* currentDataSourceShortLabel();
+
     // Host (hostname or IP, no scheme/port), port, and scheme for
     // CustomTar1090. Ignored while any hosted API is selected. All persist
     // immediately on set.
@@ -54,6 +60,16 @@ namespace AdsbClient {
     // flow - it's a one-shot user-initiated action from the Settings menu,
     // not something in the render loop.
     ConnectionTestResult testCustomConnection();
+
+    // Same idea as testCustomConnection(), but dispatches to whichever
+    // source currentDataSource() currently selects - a hosted API (adsb.fi/
+    // adsb.lol/airplanes.live) gets a minimal "null island" probe query
+    // (lat=0, lon=0, a small radius) just to confirm the host is reachable
+    // and returns the expected "ac"-shaped JSON; CustomTar1090 delegates to
+    // testCustomConnection(). This is what the Settings "Test Connection"
+    // action actually calls, so it always tests whatever's currently
+    // selected, not just the custom config.
+    ConnectionTestResult testCurrentDataSource();
 
     // Original blocking fetch - now only called internally by the
     // background task below. Calling this directly from loop() is what

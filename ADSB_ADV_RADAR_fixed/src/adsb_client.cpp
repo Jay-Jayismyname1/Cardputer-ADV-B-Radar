@@ -34,6 +34,14 @@ namespace {
     uint16_t customPortVal = Config::DEFAULT_TAR1090_PORT;
     bool customUseHttpsVal = false;
 
+    // Single source of truth for each hosted API's URL shape, shared by
+    // both the real fetch (fetchAdsbFi/fetchAdsbLol/fetchAirplanesLive) and
+    // the lightweight reachability probe (testHostedApi) below, so the two
+    // can't drift apart.
+    constexpr const char* ADSB_FI_PATH_FMT        = "/api/v3/lat/%.5f/lon/%.5f/dist/%.0f";
+    constexpr const char* ADSB_LOL_PATH_FMT       = "/v2/lat/%.5f/lon/%.5f/dist/%.0f";
+    constexpr const char* AIRPLANES_LIVE_PATH_FMT = "/v2/point/%.5f/%.5f/%.0f";
+
     // --- Background task state --------------------------------------------
     // The fetch task runs on core 0 and writes into workTable/workResult.
     // The main loop (core 1) only ever reads them, and only after
@@ -278,13 +286,13 @@ namespace {
 
     FetchResult fetchAdsbFi(double homeLat, double homeLon, float radiusKm,
                              Aircraft* table, uint8_t tableCapacity) {
-        return fetchHostedApi(Config::ADSB_API_HOST, "/api/v3/lat/%.5f/lon/%.5f/dist/%.0f",
+        return fetchHostedApi(Config::ADSB_API_HOST, ADSB_FI_PATH_FMT,
                                homeLat, homeLon, radiusKm, table, tableCapacity);
     }
 
     FetchResult fetchAdsbLol(double homeLat, double homeLon, float radiusKm,
                               Aircraft* table, uint8_t tableCapacity) {
-        return fetchHostedApi(Config::ADSB_LOL_HOST, "/v2/lat/%.5f/lon/%.5f/dist/%.0f",
+        return fetchHostedApi(Config::ADSB_LOL_HOST, ADSB_LOL_PATH_FMT,
                                homeLat, homeLon, radiusKm, table, tableCapacity);
     }
 
@@ -292,7 +300,7 @@ namespace {
                                     Aircraft* table, uint8_t tableCapacity) {
         // Positional path - lat, lon, dist with no "lat"/"lon"/"dist" literal
         // segments, unlike the other two hosted APIs.
-        return fetchHostedApi(Config::AIRPLANES_LIVE_HOST, "/v2/point/%.5f/%.5f/%.0f",
+        return fetchHostedApi(Config::AIRPLANES_LIVE_HOST, AIRPLANES_LIVE_PATH_FMT,
                                homeLat, homeLon, radiusKm, table, tableCapacity);
     }
 
@@ -387,6 +395,15 @@ void setDataSource(DataSource src) {
 }
 
 DataSource currentDataSource() { return dataSource; }
+
+const char* currentDataSourceShortLabel() {
+    switch (dataSource) {
+        case DataSource::AdsbLol:       return "LOL";
+        case DataSource::AirplanesLive: return "LIVE";
+        case DataSource::CustomTar1090: return "CSTM";
+        default:                         return "FI";
+    }
+}
 
 void setCustomHost(const char* host) {
     strncpy(customHostBuf, host, sizeof(customHostBuf) - 1);
@@ -484,6 +501,72 @@ ConnectionTestResult testCustomConnection() {
         strncpy(result.message, "OK", sizeof(result.message) - 1);
     }
     return result;
+}
+
+namespace {
+    // Lightweight reachability probe for a hosted API - a minimal query
+    // (null island, 1km radius) rather than a real fetch, just to confirm
+    // the host is up and returns the expected "ac"-shaped JSON. Deliberately
+    // uses its own throwaway client, same reasoning as testCustomConnection().
+    ConnectionTestResult testHostedApi(const char* apiHost, const char* pathFmt) {
+        ConnectionTestResult result;
+
+        if (WiFi.status() != WL_CONNECTED) {
+            strncpy(result.message, "WiFi not connected", sizeof(result.message) - 1);
+            return result;
+        }
+
+        char path[96];
+        snprintf(path, sizeof(path), pathFmt, 0.0, 0.0, 1.0);
+        char url[192];
+        snprintf(url, sizeof(url), "https://%s%s", apiHost, path);
+
+        HTTPClient http;
+        http.setTimeout(Config::HTTP_TIMEOUT_MS);
+        WiFiClientSecure testClient;
+        testClient.setInsecure();
+        testClient.setTimeout(Config::HTTP_TIMEOUT_MS);
+
+        if (!http.begin(testClient, url)) {
+            strncpy(result.message, "Invalid host/URL", sizeof(result.message) - 1);
+            return result;
+        }
+
+        int code = http.GET();
+        result.httpCode = code;
+
+        if (code != HTTP_CODE_OK) {
+            http.end();
+            snprintf(result.message, sizeof(result.message), "Failed (HTTP %d)", code);
+            return result;
+        }
+
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, http.getStream());
+        http.end();
+
+        if (err || !doc["ac"].is<JsonArrayConst>()) {
+            strncpy(result.message, "Unexpected response", sizeof(result.message) - 1);
+            return result;
+        }
+
+        result.ok = true;
+        strncpy(result.message, "OK (reachable)", sizeof(result.message) - 1);
+        return result;
+    }
+}
+
+ConnectionTestResult testCurrentDataSource() {
+    switch (dataSource) {
+        case DataSource::AdsbLol:
+            return testHostedApi(Config::ADSB_LOL_HOST, ADSB_LOL_PATH_FMT);
+        case DataSource::AirplanesLive:
+            return testHostedApi(Config::AIRPLANES_LIVE_HOST, AIRPLANES_LIVE_PATH_FMT);
+        case DataSource::CustomTar1090:
+            return testCustomConnection();
+        default:
+            return testHostedApi(Config::ADSB_API_HOST, ADSB_FI_PATH_FMT);
+    }
 }
 
 FetchResult fetch(double homeLat, double homeLon, float radiusKm,

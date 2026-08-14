@@ -2,6 +2,9 @@
 #include "radar_math.h"
 #include "config.h"
 #include "units.h"
+#include "adsb_client.h"
+#include "proximity_alert.h"
+#include "alert_filter.h"
 #include <M5Cardputer.h>
 #include <Preferences.h>
 
@@ -227,12 +230,17 @@ namespace {
 
         int16_t screenW = M5Cardputer.Display.width();
 
-        // Top-left: green WiFi status dot, GPS/location method label to its right.
+        // Top-left: green WiFi status dot, GPS/location method label to its
+        // right, and the current ADS-B data source abbreviated on the line
+        // below (FI/LOL/LIVE/CSTM) - at a glance which feed is in use
+        // without having to open Settings.
         constexpr int16_t dotX = 8, dotY = 8, dotR = 4;
         radarSprite.fillCircle(dotX, dotY, dotR, wifiConnected ? TFT_GREEN : TFT_DARKGREEN);
         radarSprite.setTextDatum(middle_left);
         radarSprite.setTextColor(TFT_WHITE);
         radarSprite.drawString(locationLabel, dotX + dotR + 6, dotY);
+        radarSprite.setTextColor(TFT_DARKGREEN);
+        radarSprite.drawString(AdsbClient::currentDataSourceShortLabel(), dotX + dotR + 6, dotY + 12);
 
         // Top-center: blinking "EMERGENCY" banner whenever any tracked
         // aircraft is squawking 7500/7600/7700 - shown regardless of
@@ -266,6 +274,26 @@ namespace {
         radarSprite.setTextDatum(middle_right);
         radarSprite.setTextColor(TFT_WHITE);
         radarSprite.drawString(countLabel, pillX - 6, pillY + pillH / 2);
+
+        // Below the total count: how many of those aircraft currently
+        // satisfy the proximity beep predicate (same distance/height
+        // thresholds ProximityAlert::checkAndAlert() uses, or emergency) -
+        // a live "how many would beep right now" count, not just the ones
+        // that were newly in range on the last scan.
+        uint8_t inBeepRangeCount = 0;
+        for (uint8_t i = 0; i < count; i++) {
+            if (!list[i].valid) continue;
+            if (AlertFilter::shouldAlert(list[i].distanceKm, static_cast<float>(list[i].altBaroFt),
+                                          list[i].isEmergencySquawk(),
+                                          ProximityAlert::getThresholdKm(),
+                                          ProximityAlert::getThresholdAltFt())) {
+                inBeepRangeCount++;
+            }
+        }
+        char inRangeLabel[8];
+        snprintf(inRangeLabel, sizeof(inRangeLabel), "(%u)", inBeepRangeCount);
+        radarSprite.setTextColor(TFT_DARKGREEN);
+        radarSprite.drawString(inRangeLabel, pillX - 6, pillY + pillH / 2 + 12);
 
         // Range scale — bottom-left corner, just above the HUD panel divider.
         char rangeLabel[16];
