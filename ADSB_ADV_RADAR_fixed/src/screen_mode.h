@@ -3,5 +3,6 @@
 enum class ScreenMode {
     Radar,
     WifiSetup,
-    Settings
+    Settings,
+    FlightDetail
 };

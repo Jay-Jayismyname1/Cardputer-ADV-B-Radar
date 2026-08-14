@@ -16,6 +16,7 @@
 #include "location_manager.h"
 #include "units.h"
 #include "flight_logbook.h"
+#include "flight_detail.h"
 
 namespace {
     uint32_t lastFetchMs = 0;
@@ -114,6 +115,12 @@ namespace {
     }
 
     constexpr uint8_t HID_BACKSPACE = 0x2A;
+    constexpr uint8_t HID_ENTER = 0x28;
+    // See settings_menu.cpp's HID_ESC note - this board never reliably
+    // reports the physical Esc key via status.hid_keys, only as '`' in
+    // status.word, so that's the primary check wherever Esc needs handling
+    // outside SettingsMenu/WifiSetupScreen (which already do their own).
+    constexpr uint8_t HID_ESC = 0x29;
 
     // Same feel as the Settings menu's row-navigation tone (TONE_NAV_HZ/MS
     // in settings_menu.cpp) - selecting a different aircraft here is the
@@ -126,6 +133,16 @@ namespace {
             if (k == HID_BACKSPACE) {
                 screenMode = ScreenMode::Settings;
                 SettingsMenu::onEnter();
+                return;
+            }
+            if (k == HID_ENTER) {
+                // Opens the full-detail panel for whichever aircraft is
+                // currently selected - a no-op with nothing selected
+                // (count == 0), same as Tab already is in that case.
+                if (AircraftTable::validCount() > 0) {
+                    screenMode = ScreenMode::FlightDetail;
+                    VolumeControl::keyBeep(TONE_SELECT_HZ, TONE_SELECT_MS);
+                }
                 return;
             }
         }
@@ -149,6 +166,25 @@ namespace {
             // Only beep when the selection actually moved to a different
             // aircraft - with a single aircraft on screen, "next" wraps
             // back to itself and there's no real switch to confirm.
+            if (count > 1) VolumeControl::keyBeep(TONE_SELECT_HZ, TONE_SELECT_MS);
+        }
+    }
+
+    // Esc/backtick to leave; Tab cycles the selection the same as on the
+    // radar (same debounce/acceptKeyEvent gating this is called through),
+    // so the panel just swaps to show the next aircraft instead of forcing
+    // a trip back to Radar first to change the selection.
+    void handleKeyboardFlightDetail(const Keyboard_Class::KeysState& status) {
+        for (auto k : status.hid_keys) {
+            if (k == HID_ESC) { screenMode = ScreenMode::Radar; return; }
+        }
+        for (auto c : status.word) {
+            if (c == '`') { screenMode = ScreenMode::Radar; return; }
+        }
+
+        if (status.tab) {
+            uint8_t count = AircraftTable::validCount();
+            if (count > 0) selectedIndex = (selectedIndex + 1) % count;
             if (count > 1) VolumeControl::keyBeep(TONE_SELECT_HZ, TONE_SELECT_MS);
         }
     }
@@ -178,6 +214,7 @@ void setup() {
     LocationManager::init();
     Units::init();
     FlightLogbook::init();
+    FlightDetail::init();
     AdsbClient::init();
 
     // Starts the background FreeRTOS task (pinned to core 0) that
@@ -266,6 +303,15 @@ void loop() {
 
     if (screenMode == ScreenMode::Radar) {
         if (keyChanged) handleKeyboardRadar(status);
+    } else if (screenMode == ScreenMode::FlightDetail) {
+        if (keyChanged) handleKeyboardFlightDetail(status);
+        // The aircraft being viewed can drop out of range/table while this
+        // screen is open (table update below keeps running regardless of
+        // screenMode) - fall back to the radar rather than showing a
+        // detail panel for an index that's no longer valid.
+        if (selectedIndex >= AircraftTable::validCount()) {
+            screenMode = ScreenMode::Radar;
+        }
     } else { // Settings
         if (keyChanged) {
             char chars[16];
@@ -309,7 +355,10 @@ void loop() {
     // 0 and returns immediately; loop() keeps ticking the sweep/rendering
     // every frame while the fetch runs in parallel. The result is picked
     // up below, whenever it's actually ready.
-    if (screenMode == ScreenMode::Radar &&
+    // Keeps polling on FlightDetail too, not just Radar - the whole point
+    // of that screen is that the aircraft it's showing keeps updating live
+    // in the background while it's open, per its own header comment.
+    if ((screenMode == ScreenMode::Radar || screenMode == ScreenMode::FlightDetail) &&
         WifiMgr::getState() == WifiMgr::State::Connected &&
         now - lastFetchMs >= Config::FETCH_INTERVAL_MS) {
 
@@ -382,6 +431,14 @@ void loop() {
                               DisplayRadar::currentRangeKm(), selectedIndex,
                               wifiConnected, M5Cardputer.Power.getBatteryLevel(),
                               locationStatusLabel(), lastHttpCode);
+    } else if (screenMode == ScreenMode::FlightDetail) {
+        // Sweep keeps ticking even off-screen so it doesn't jump when the
+        // user returns to Radar - cheap (a float add and a mod), and
+        // matches "the radar keeps running in the background" already
+        // being true of the data side (fetch/update above isn't gated to
+        // Radar either).
+        DisplayRadar::tickSweep(now - lastFrameMs);
+        FlightDetail::render(AircraftTable::raw()[selectedIndex]);
     } else {
         SettingsMenu::render();
     }

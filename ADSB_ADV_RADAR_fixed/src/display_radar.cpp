@@ -373,6 +373,10 @@ float currentSweepAngle() {
     return sweepAngleDeg;
 }
 
+M5Canvas& sprite() {
+    return radarSprite;
+}
+
 void render(const Aircraft* aircraftList, uint8_t count,
             float rangeKm, uint8_t selectedIndex,
             bool wifiConnected, int batteryPct,
