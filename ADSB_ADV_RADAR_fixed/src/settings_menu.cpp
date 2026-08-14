@@ -74,28 +74,42 @@ namespace {
     bool inWifiManage = false;
     uint8_t wifiManageSelected = 0; // 0..savedCount-1 = saved networks, savedCount = "Add network"
 
+    // Edits exactly one axis at a time (manualEntryField selects which) -
+    // triggered by Enter on the Lat/Lon row in the Location sub-screen
+    // itself, same pattern as Data Source's Host/Port entry, rather than a
+    // dedicated dual-field screen reached via a global hotkey.
     bool inManualLocationEntry = false;
     uint8_t manualEntryField = 0; // 0 = lat, 1 = lon
-    char manualLatBuf[16] = "";
-    char manualLonBuf[16] = "";
-    uint8_t manualLatLen = 0;
-    uint8_t manualLonLen = 0;
+    char manualFieldBuf[16] = "";
+    uint8_t manualFieldLen = 0;
 
     // Radar rotation: an inline slider on the main list (like Display/LED
     // brightness) for quick coarse steps, plus an exact-value entry mode
-    // (same "m" convention as Location's manual lat/lon) for precise input.
+    // (same "m" convention Location's manual lat/lon used to use) for
+    // precise input.
     constexpr int16_t ROTATION_STEP_DEG = 15;
     bool inRotationManualEntry = false;
     char rotationBuf[4] = ""; // "0".."359"
     uint8_t rotationLen = 0;
 
-    // Location sub-screen: row 0 is always the GPS on/off toggle. Row 1 is
-    // context-sensitive - the GPS pin-pair cycler while GPS is on, or the
-    // IP/Manual source toggle while GPS is off - but it's always exactly
-    // one row, so a plain 2-row list with ;/. navigation covers both.
+    // Location sub-screen: row 0 is always the Hardware GPS on/off toggle.
+    // Row 1 is context-sensitive - the GPS pin-pair cycler while GPS is on,
+    // or the IP/Manual "Other Source" toggle while GPS is off. Rows 2/3
+    // (Lat/Lon) only exist when GPS is off AND Other Source is Manual - see
+    // locationRowCount() below for how the row count flexes, same pattern
+    // as Data Source's dataSourceRowCount().
     bool inLocationSubscreen = false;
     uint8_t locationSubSelected = 0;
-    constexpr uint8_t LOCATION_SUB_ROWS = 2;
+    constexpr uint8_t LOCATION_ROW_TOGGLE = 0; // Hardware GPS on/off
+    constexpr uint8_t LOCATION_ROW_SECOND = 1; // Pin (GPS on) or Other Source (GPS off)
+    constexpr uint8_t LOCATION_ROW_LAT    = 2; // Manual only
+    constexpr uint8_t LOCATION_ROW_LON    = 3; // Manual only
+
+    uint8_t locationRowCount() {
+        if (LocationManager::isGpsEnabled()) return 2;
+        bool manual = LocationManager::sourcePreference() == LocationManager::SourcePref::Manual;
+        return manual ? 4 : 2;
+    }
 
     // Data Source sub-screen: Source cycle (adsb.fi/adsb.lol/airplanes.live/
     // Custom), then a Test Connection action always present at the end.
@@ -194,17 +208,20 @@ namespace {
         M5Cardputer.Display.setBrightness((displayBrightnessPercent * 255) / 100);
     }
 
-    void startManualEntry() {
+    // field: 0 = lat, 1 = lon. Prefills from the dedicated manual-location
+    // storage (not getHomeLocation(), which would return the live GPS/IP fix
+    // instead of what's actually saved as the manual value).
+    void startManualFieldEntry(uint8_t field) {
         double lat = 0.0, lon = 0.0;
-        LocationManager::getHomeLocation(lat, lon);
-        if (lat != 0.0 || lon != 0.0) {
-            manualLatLen = snprintf(manualLatBuf, sizeof(manualLatBuf), "%.4f", lat);
-            manualLonLen = snprintf(manualLonBuf, sizeof(manualLonBuf), "%.4f", lon);
+        if (LocationManager::hasManualLocation()) {
+            LocationManager::getManualLocation(lat, lon);
+            double val = (field == 0) ? lat : lon;
+            manualFieldLen = snprintf(manualFieldBuf, sizeof(manualFieldBuf), "%.4f", val);
         } else {
-            manualLatBuf[0] = '\0'; manualLatLen = 0;
-            manualLonBuf[0] = '\0'; manualLonLen = 0;
+            manualFieldBuf[0] = '\0';
+            manualFieldLen = 0;
         }
-        manualEntryField = 0;
+        manualEntryField = field;
         inManualLocationEntry = true;
     }
 
@@ -279,8 +296,6 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                  const uint8_t* hidKeys, uint8_t hidKeyCount) {
 
     if (inManualLocationEntry) {
-        char* buf = (manualEntryField == 0) ? manualLatBuf : manualLonBuf;
-        uint8_t& len = (manualEntryField == 0) ? manualLatLen : manualLonLen;
         constexpr uint8_t bufCap = 16;
 
         Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
@@ -293,36 +308,45 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         }
 
         if (hasBackspace) {
-            if (len > 0) { len--; buf[len] = '\0'; tone(TONE_ADJUST_HZ, TONE_ADJUST_MS); }
+            if (manualFieldLen > 0) {
+                manualFieldLen--;
+                manualFieldBuf[manualFieldLen] = '\0';
+                tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
+            }
             return;
         }
 
         if (hasEnter) {
-            if (manualEntryField == 0) {
-                manualEntryField = 1;
-                tone(TONE_NAV_HZ, TONE_NAV_MS);
-            } else {
-                double lat = atof(manualLatBuf);
-                double lon = atof(manualLonBuf);
-                if ((lat != 0.0 || lon != 0.0) && lat >= -90.0 && lat <= 90.0 &&
-                    lon >= -180.0 && lon <= 180.0) {
-                    LocationManager::setManualLocation(lat, lon);
-                    tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
-                    inManualLocationEntry = false;
-                } else {
-                    // Invalid/empty — low buzz, stay in the field to fix it.
-                    tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
-                }
+            if (manualFieldLen == 0) {
+                // Empty - low buzz, stay in the field to fix it.
+                tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
+                return;
             }
+            double val = atof(manualFieldBuf);
+            bool valid = (manualEntryField == 0) ? (val >= -90.0 && val <= 90.0)
+                                                   : (val >= -180.0 && val <= 180.0);
+            if (!valid) {
+                tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
+                return;
+            }
+            // Only this one axis is being edited - fold the new value in
+            // alongside whatever the other axis already is, rather than
+            // clobbering it.
+            double lat = 0.0, lon = 0.0;
+            LocationManager::getManualLocation(lat, lon);
+            if (manualEntryField == 0) lat = val; else lon = val;
+            LocationManager::setManualLocation(lat, lon);
+            tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+            inManualLocationEntry = false;
             return;
         }
 
         for (uint8_t i = 0; i < count; i++) {
             char c = chars[i];
             bool allowed = (c >= '0' && c <= '9') || c == '-' || c == '.';
-            if (allowed && len < bufCap - 1) {
-                buf[len++] = c;
-                buf[len] = '\0';
+            if (allowed && manualFieldLen < bufCap - 1) {
+                manualFieldBuf[manualFieldLen++] = c;
+                manualFieldBuf[manualFieldLen] = '\0';
             }
         }
         return;
@@ -577,8 +601,6 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
     if (inLocationSubscreen) {
         Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
         bool hasEnter = keys.enter, hasEsc = keys.esc, hasBacktick = keys.backtick;
-        bool hasM = false;
-        for (uint8_t i = 0; i < count; i++) if (chars[i] == 'm') hasM = true;
 
         if (hasEsc || hasBacktick) {
             tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -586,31 +608,30 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
             return;
         }
 
-        if (hasM) {
-            // Manual coordinate entry is available regardless of which row
-            // is selected, same as it was on the main list before.
-            tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
-            startManualEntry();
-            return;
-        }
-
         bool gpsOn = LocationManager::isGpsEnabled();
+        uint8_t rowCount = locationRowCount();
 
         for (uint8_t i = 0; i < count; i++) {
             if (chars[i] == ';') { // up
-                locationSubSelected = (locationSubSelected + LOCATION_SUB_ROWS - 1) % LOCATION_SUB_ROWS;
+                locationSubSelected = (locationSubSelected + rowCount - 1) % rowCount;
                 tone(TONE_NAV_HZ, TONE_NAV_MS);
             } else if (chars[i] == '.') { // down
-                locationSubSelected = (locationSubSelected + 1) % LOCATION_SUB_ROWS;
+                locationSubSelected = (locationSubSelected + 1) % rowCount;
                 tone(TONE_NAV_HZ, TONE_NAV_MS);
             } else if (chars[i] == '/' || chars[i] == ',') { // adjust selected row
-                if (locationSubSelected == 1) {
+                if (locationSubSelected == LOCATION_ROW_SECOND) {
                     if (gpsOn) {
                         LocationManager::cycleGpsPinPair();
                     } else {
                         bool nowManual = LocationManager::sourcePreference() == LocationManager::SourcePref::Manual;
                         LocationManager::setSourceOverride(nowManual ? LocationManager::SourcePref::Auto
                                                                        : LocationManager::SourcePref::Manual);
+                        // Row count just changed (Manual adds the Lat/Lon
+                        // rows, Auto/IP removes them) - keep the selection
+                        // in range rather than pointing at a row that no
+                        // longer exists.
+                        uint8_t newCount = locationRowCount();
+                        if (locationSubSelected >= newCount) locationSubSelected = newCount - 1;
                     }
                     tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
                 }
@@ -618,14 +639,27 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         }
 
         if (hasEnter) {
-            if (locationSubSelected == 0) {
+            if (locationSubSelected == LOCATION_ROW_TOGGLE) {
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
                 LocationManager::setGpsEnabled(!gpsOn);
-            } else if (!gpsOn) {
+                // Row layout just changed (Pin <-> Other Source, possibly
+                // Lat/Lon appearing/disappearing) - keep the selection in
+                // range.
+                uint8_t newCount = locationRowCount();
+                if (locationSubSelected >= newCount) locationSubSelected = newCount - 1;
+            } else if (!gpsOn && locationSubSelected == LOCATION_ROW_SECOND) {
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
                 bool nowManual = LocationManager::sourcePreference() == LocationManager::SourcePref::Manual;
                 LocationManager::setSourceOverride(nowManual ? LocationManager::SourcePref::Auto
                                                                : LocationManager::SourcePref::Manual);
+                uint8_t newCount = locationRowCount();
+                if (locationSubSelected >= newCount) locationSubSelected = newCount - 1;
+            } else if (!gpsOn && locationSubSelected == LOCATION_ROW_LAT) {
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                startManualFieldEntry(0);
+            } else if (!gpsOn && locationSubSelected == LOCATION_ROW_LON) {
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                startManualFieldEntry(1);
             }
         }
         return;
@@ -934,23 +968,17 @@ void render() {
         d.setTextDatum(top_left);
         d.setTextColor(TFT_GREEN);
         d.setCursor(4, 4);
-        d.println("Manual location");
+        d.println(manualEntryField == 0 ? "Manual Latitude" : "Manual Longitude");
         d.drawFastHLine(0, 20, d.width(), TFT_DARKGREEN);
 
+        d.setTextColor(TFT_BLACK, TFT_GREEN);
         d.setCursor(4, 28);
-        d.setTextColor(manualEntryField == 0 ? TFT_BLACK : TFT_WHITE,
-                        manualEntryField == 0 ? TFT_GREEN : TFT_BLACK);
-        d.printf(" Lat: %s%s \n", manualLatBuf, manualEntryField == 0 ? "_" : "");
-
-        d.setCursor(4, 46);
-        d.setTextColor(manualEntryField == 1 ? TFT_BLACK : TFT_WHITE,
-                        manualEntryField == 1 ? TFT_GREEN : TFT_BLACK);
-        d.printf(" Lon: %s%s \n", manualLonBuf, manualEntryField == 1 ? "_" : "");
+        d.printf(" %s_ \n", manualFieldBuf);
 
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-        d.setCursor(4, 66);
-        d.println("Digits, - and . only");
-        d.println("Enter: next  Del: back  `: cancel");
+        d.setCursor(4, 48);
+        d.println(manualEntryField == 0 ? "Degrees, -90 to 90" : "Degrees, -180 to 180");
+        d.println("Enter: set  Del: back  `: cancel");
 
         d.pushSprite(0, 0);
         return;
@@ -1077,34 +1105,67 @@ void render() {
 
     if (inLocationSubscreen) {
         bool gpsOn = LocationManager::isGpsEnabled();
+        bool manual = LocationManager::sourcePreference() == LocationManager::SourcePref::Manual;
+        uint8_t rowCount = locationRowCount();
 
         char row0[32];
-        snprintf(row0, sizeof(row0), " GPS: %s", gpsOn ? "ON" : "OFF");
+        snprintf(row0, sizeof(row0), " Hardware GPS: %s", gpsOn ? "Enabled" : "Disabled");
 
         char row1[32];
         if (gpsOn) {
             snprintf(row1, sizeof(row1), " Pin: %s", LocationManager::currentGpsPinLabel());
         } else {
-            snprintf(row1, sizeof(row1), " Source: %s", locationSourceLabel());
+            snprintf(row1, sizeof(row1), " Other Source: %s", manual ? "Manual" : "IP");
         }
 
-        const char* rows[LOCATION_SUB_ROWS] = { row0, row1 };
-        int16_t noteY = renderSubscreenRows(d, "Location", rows, LOCATION_SUB_ROWS, locationSubSelected,
-                                             ";/.=move Ent/,//=set m=manual `=back");
+        char row2[32], row3[32];
+        const char* rows[4]; // max possible rows; only the first rowCount are used
+        rows[0] = row0;
+        rows[1] = row1;
 
-        // Current location, shown below the row list rather than as a
-        // selectable row - it's informational, not something to edit here
-        // (that's what 'm' / Manual entry is for).
-        double lat = 0.0, lon = 0.0;
-        bool haveFix = LocationManager::currentSource() != LocationManager::Source::None;
-        if (haveFix) LocationManager::getHomeLocation(lat, lon);
+        if (!gpsOn && manual) {
+            double mLat = 0.0, mLon = 0.0;
+            bool haveManual = LocationManager::hasManualLocation();
+            if (haveManual) LocationManager::getManualLocation(mLat, mLon);
+            if (haveManual) {
+                snprintf(row2, sizeof(row2), " Lat: %.4f", mLat);
+                snprintf(row3, sizeof(row3), " Lon: %.4f", mLon);
+            } else {
+                snprintf(row2, sizeof(row2), " Lat: (not set)");
+                snprintf(row3, sizeof(row3), " Lon: (not set)");
+            }
+            rows[2] = row2;
+            rows[3] = row3;
+        }
 
+        int16_t noteY = renderSubscreenRows(d, "Location", rows, rowCount, locationSubSelected,
+                                             ";/.=move Ent/,//=set `=back");
+
+        // Informational line below the row list - GPS lock/satellite status
+        // while Hardware GPS is on, or the resolved IP-derived coordinates
+        // while Other Source is IP. Manual coordinates are already shown as
+        // editable Lat/Lon rows above, so nothing extra is drawn here for
+        // that case.
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
         d.setCursor(4, noteY + 4);
-        if (haveFix) {
-            d.printf(" %.4f, %.4f", lat, lon);
-        } else {
-            d.print(" No fix yet");
+        if (gpsOn) {
+            uint32_t sats = LocationManager::satelliteCount();
+            if (LocationManager::hasGpsFix()) {
+                double lat = 0.0, lon = 0.0;
+                LocationManager::getHomeLocation(lat, lon);
+                d.printf(" %.4f, %.4f (Sats: %u)", lat, lon, sats);
+            } else {
+                d.printf(" No lock (Sats: %u)", sats);
+            }
+        } else if (!manual) {
+            double lat = 0.0, lon = 0.0;
+            bool haveFix = LocationManager::currentSource() != LocationManager::Source::None;
+            if (haveFix) LocationManager::getHomeLocation(lat, lon);
+            if (haveFix) {
+                d.printf(" %.4f, %.4f", lat, lon);
+            } else {
+                d.print(" No fix yet");
+            }
         }
 
         d.pushSprite(0, 0);

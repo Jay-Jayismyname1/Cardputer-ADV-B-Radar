@@ -25,9 +25,17 @@ namespace LocationManager {
     void setSourceOverride(SourcePref pref);
     SourcePref sourcePreference();
 
+    // Manual coordinates are stored separately from the GPS/IP-derived
+    // ("auto") location, so switching the source to IP and back to Manual
+    // never loses what the user typed in - see setManualLocation()'s
+    // implementation comment for why.
+    bool hasManualLocation();
+    void getManualLocation(double& lat, double& lon);
+
     void cycleGpsPinPair();
     const char* currentGpsPinLabel();
 
     bool hasGpsFix();
+    uint32_t satelliteCount();
 
 }

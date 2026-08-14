@@ -21,8 +21,16 @@ namespace {
     uint8_t gpsPinIndex = 0;
     bool gpsSerialStarted = false;
 
+    // GPS/IP-derived location - whatever the device figured out on its own.
     double lastLat = 0, lastLon = 0;
     bool havePersisted = false;
+
+    // Manual entry, kept in its own prefs keys and its own in-memory copy so
+    // a background IP lookup (which only ever touches lastLat/lastLon above)
+    // can never overwrite it. Without this split, switching Source to IP and
+    // back to Manual would silently lose whatever the user had typed in.
+    double manualLat = 0, manualLon = 0;
+    bool haveManualLocation = false;
 
     bool ipLookupDone = false;
     uint32_t lastIpLookupAttemptMs = 0;
@@ -45,6 +53,14 @@ namespace {
         lastLon = lon;
         havePersisted = true;
     }
+
+    void persistManualLocation(double lat, double lon) {
+        prefs.putDouble("manualLat", lat);
+        prefs.putDouble("manualLon", lon);
+        manualLat = lat;
+        manualLon = lon;
+        haveManualLocation = true;
+    }
 }
 
 void init() {
@@ -60,11 +76,32 @@ void init() {
         lastLat = lat;
         lastLon = lon;
         havePersisted = true;
+    }
+
+    double mLat = prefs.getDouble("manualLat", 0.0);
+    double mLon = prefs.getDouble("manualLon", 0.0);
+    if (mLat != 0.0 || mLon != 0.0) {
+        manualLat = mLat;
+        manualLon = mLon;
+        haveManualLocation = true;
+    } else if (sourcePref == SourcePref::Manual && havePersisted) {
+        // One-time migration: firmware versions before the manual/auto
+        // location split stored manual entries in the same "homeLat"/
+        // "homeLon" keys as GPS/IP fixes. If this is that older state (no
+        // manualLat/Lon saved yet, but the user's preference was already
+        // Manual), seed the new manual keys from it so the upgrade doesn't
+        // look like the manual coordinates were lost.
+        persistManualLocation(lastLat, lastLon);
+    }
+
+    if (sourcePref == SourcePref::Manual && haveManualLocation) {
         // If the user had explicitly chosen Manual last session, report it
         // as such right away rather than the more generic "Persisted",
         // which read the same whether the coords came from GPS, IP, or a
         // manual entry.
-        source = (sourcePref == SourcePref::Manual) ? Source::Manual : Source::Persisted;
+        source = Source::Manual;
+    } else if (havePersisted) {
+        source = Source::Persisted;
     }
 
     startGpsSerialIfNeeded();
@@ -89,7 +126,13 @@ void requestIpLookupIfNeeded() {
     // background IP lookup silently overwrite them.
     if (sourcePref == SourcePref::Manual) return;
     if (ipLookupDone) return;
-    if (gps.location.isValid()) return;
+    // gpsEnabled, not just gps.location.isValid() - TinyGPSPlus's isValid()
+    // latches true forever after the first successfully parsed fix and has
+    // no concept of "GPS was turned off"; update() stops feeding it new
+    // sentences the instant gpsEnabled goes false, but isValid() itself
+    // never resets on its own. Without this check, disabling Hardware GPS
+    // after ever having had a fix would permanently block IP lookups too.
+    if (gpsEnabled && gps.location.isValid()) return;
     if (WiFi.status() != WL_CONNECTED) return;
 
     uint32_t now = millis();
@@ -129,9 +172,18 @@ void requestIpLookupIfNeeded() {
 }
 
 void getHomeLocation(double& lat, double& lon) {
-    if (gps.location.isValid()) {
+    // Same gpsEnabled + isValid() gating as requestIpLookupIfNeeded() above,
+    // and for the same reason - otherwise a device that ever had a GPS fix
+    // would keep reporting that frozen position forever after Hardware GPS
+    // is disabled, ignoring whatever Manual/IP source the user just picked.
+    if (gpsEnabled && gps.location.isValid()) {
         lat = gps.location.lat();
         lon = gps.location.lng();
+        return;
+    }
+    if (sourcePref == SourcePref::Manual && haveManualLocation) {
+        lat = manualLat;
+        lon = manualLon;
         return;
     }
     if (havePersisted) {
@@ -144,10 +196,17 @@ void getHomeLocation(double& lat, double& lon) {
 Source currentSource() { return source; }
 
 void setManualLocation(double lat, double lon) {
-    persistLocation(lat, lon);
+    persistManualLocation(lat, lon);
     source = Source::Manual;
     sourcePref = SourcePref::Manual;
     prefs.putUChar("locSrc", static_cast<uint8_t>(sourcePref));
+}
+
+bool hasManualLocation() { return haveManualLocation; }
+
+void getManualLocation(double& lat, double& lon) {
+    lat = manualLat;
+    lon = manualLon;
 }
 
 void setSourceOverride(SourcePref pref) {
@@ -155,7 +214,7 @@ void setSourceOverride(SourcePref pref) {
     prefs.putUChar("locSrc", static_cast<uint8_t>(sourcePref));
 
     if (pref == SourcePref::Manual) {
-        if (havePersisted) source = Source::Manual;
+        source = haveManualLocation ? Source::Manual : Source::None;
     } else {
         // Switching back to Auto/IP - drop any cached one-shot lookup
         // state so a fresh IP fix is attempted promptly, instead of
@@ -174,6 +233,19 @@ void setGpsEnabled(bool enabled) {
     if (enabled) {
         gpsSerialStarted = false;
         startGpsSerialIfNeeded();
+    } else {
+        // Every read above (getHomeLocation()/hasGpsFix()/
+        // requestIpLookupIfNeeded()) already gates on gpsEnabled before
+        // trusting gps.location.isValid(), so they stop treating a past fix
+        // as current the instant this flag flips. `source` and the IP
+        // lookup cache still need an explicit nudge here though, so the
+        // reported source - and a fresh IP fix, if that's the active
+        // preference - land immediately instead of waiting on the next
+        // update()/retry tick.
+        source = (sourcePref == SourcePref::Manual && haveManualLocation) ? Source::Manual
+                 : havePersisted ? Source::Persisted : Source::None;
+        ipLookupDone = false;
+        lastIpLookupAttemptMs = 0;
     }
 }
 
@@ -190,6 +262,10 @@ const char* currentGpsPinLabel() {
     return Config::GPS_PIN_CANDIDATES[gpsPinIndex].label;
 }
 
-bool hasGpsFix() { return gps.location.isValid(); }
+bool hasGpsFix() { return gpsEnabled && gps.location.isValid(); }
+
+uint32_t satelliteCount() {
+    return (gpsEnabled && gps.satellites.isValid()) ? gps.satellites.value() : 0;
+}
 
 }
