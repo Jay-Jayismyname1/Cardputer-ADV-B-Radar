@@ -168,6 +168,7 @@ void setup() {
     LocationManager::init();
     Units::init();
     FlightLogbook::init();
+    AdsbClient::init();
 
     // Starts the background FreeRTOS task (pinned to core 0) that
     // AdsbClient::requestFetch()/resultReady()/consumeResult() talk to

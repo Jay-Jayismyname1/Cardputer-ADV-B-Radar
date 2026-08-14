@@ -11,10 +11,34 @@ namespace AdsbClient {
         int      httpCode = 0;
     };
 
+    // Where fetch() gets its data from - the public opendata.adsb.fi API
+    // (default, unchanged behavior), or a user-supplied tar1090/readsb
+    // instance of their own (plain HTTP, host:port they configure in
+    // Settings). Both sources are parsed by the same shared field-extraction
+    // logic - see adsb_client.cpp - since the per-aircraft JSON fields are
+    // identical between the two; only the transport, URL, and top-level
+    // array key ("ac" vs "aircraft") differ.
+    enum class DataSource : uint8_t { AdsbFi = 0, CustomTar1090 = 1 };
+
+    // Loads the persisted data-source selection/host/port. Call once from
+    // setup(), same as every other module's init().
+    void init();
+
+    void setDataSource(DataSource src);
+    DataSource currentDataSource();
+
+    // Host (hostname or IP, no scheme/port) and port for CustomTar1090.
+    // Ignored while AdsbFi is selected. Both persist immediately on set.
+    void setCustomHost(const char* host);
+    const char* customHost();
+    void setCustomPort(uint16_t port);
+    uint16_t customPort();
+
     // Original blocking fetch - now only called internally by the
     // background task below. Calling this directly from loop() is what
     // caused the ~1-3s UI stutter every FETCH_INTERVAL_MS (TLS handshake +
-    // HTTP GET + JSON parse all block whichever core calls it).
+    // HTTP GET + JSON parse all block whichever core calls it). Dispatches
+    // to the adsb.fi or tar1090 implementation based on currentDataSource().
     FetchResult fetch(double homeLat, double homeLon, float radiusKm,
                        Aircraft* table, uint8_t tableCapacity);
 

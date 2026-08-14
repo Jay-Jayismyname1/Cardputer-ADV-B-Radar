@@ -21,6 +21,14 @@ namespace Config {
     constexpr uint32_t FETCH_INTERVAL_MS = 8000;
     constexpr uint32_t HTTP_TIMEOUT_MS = 6000;
 
+    // A user-supplied tar1090/readsb instance is an alternative to the
+    // above adsb.fi API (see AdsbClient::DataSource) - plain HTTP, no
+    // built-in range filtering server-side (unlike adsb.fi's own radius
+    // query), so the app filters by range client-side instead.
+    constexpr uint16_t DEFAULT_TAR1090_PORT = 8080;
+    constexpr uint8_t TAR1090_HOST_MAX_LEN = 48; // hostname or IP, e.g. "10.10.1.93"
+    constexpr const char* TAR1090_AIRCRAFT_PATH = "/data/aircraft.json";
+
     constexpr float DEFAULT_PROXIMITY_ALERT_KM = 8.0f;
     constexpr float DEFAULT_PROXIMITY_ALERT_ALT_FT = 5000.0f;
     constexpr uint32_t ALERT_RETRIGGER_COOLDOWN_MS = 30000;

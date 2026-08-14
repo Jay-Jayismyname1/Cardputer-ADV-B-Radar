@@ -8,6 +8,7 @@
 #include "units.h"
 #include "flight_logbook.h"
 #include "display_radar.h"
+#include "adsb_client.h"
 #include "config.h"
 #include <M5Cardputer.h>
 #include <Preferences.h>
@@ -36,7 +37,7 @@ namespace {
 
     void tone(uint16_t hz, uint16_t ms) { M5Cardputer.Speaker.tone(hz, ms); }
 
-    enum class Item : uint8_t { Wifi = 0, Location, Units, ProxBeep, DisplayBrightness, RadarRotation, LedBrightness, Volume, Logbook, Count };
+    enum class Item : uint8_t { Wifi = 0, Location, DataSource, Units, ProxBeep, DisplayBrightness, RadarRotation, LedBrightness, Volume, Logbook, Count };
     Item selected = Item::Wifi;
 
     // How many item rows are scrolled past the top of the visible list -
@@ -70,6 +71,28 @@ namespace {
     bool inLocationSubscreen = false;
     uint8_t locationSubSelected = 0;
     constexpr uint8_t LOCATION_SUB_ROWS = 2;
+
+    // Data Source sub-screen: adsb.fi/Custom toggle, host, port. Host/port
+    // are only meaningful while Custom is selected, but editing them while
+    // adsb.fi is active is harmless - they just won't be used until the
+    // user switches Source to Custom.
+    bool inDataSourceSubscreen = false;
+    uint8_t dataSourceSubSelected = 0;
+    constexpr uint8_t DATASOURCE_SUB_ROWS = 3;
+
+    // Host is free-text (hostname or IP) - same printable-ASCII entry
+    // pattern already used for the WiFi password field in
+    // wifi_setup_screen.cpp, rather than the digits-only pattern used for
+    // manual lat/lon/rotation entry.
+    bool inHostTextEntry = false;
+    char hostBuf[Config::TAR1090_HOST_MAX_LEN] = "";
+    uint8_t hostLen = 0;
+
+    // Port is digits-only, same convention as the other numeric-entry
+    // screens.
+    bool inPortEntry = false;
+    char portBuf[6] = ""; // up to 65535
+    uint8_t portLen = 0;
 
     // Units sub-screen: distance + altitude, each a simple cycle.
     bool inUnitsSubscreen = false;
@@ -127,6 +150,18 @@ namespace {
         return (LocationManager::sourcePreference() == LocationManager::SourcePref::Manual)
                    ? "manual" : "IP";
     }
+
+    void startHostEntry() {
+        strncpy(hostBuf, AdsbClient::customHost(), sizeof(hostBuf) - 1);
+        hostBuf[sizeof(hostBuf) - 1] = '\0';
+        hostLen = strlen(hostBuf);
+        inHostTextEntry = true;
+    }
+
+    void startPortEntry() {
+        portLen = snprintf(portBuf, sizeof(portBuf), "%u", AdsbClient::customPort());
+        inPortEntry = true;
+    }
 }
 
 void init() {
@@ -156,6 +191,9 @@ void onEnter() {
     inWifiManage = false;
     inManualLocationEntry = false;
     inLocationSubscreen = false;
+    inDataSourceSubscreen = false;
+    inHostTextEntry = false;
+    inPortEntry = false;
     inUnitsSubscreen = false;
     inProxBeepSubscreen = false;
     inRotationManualEntry = false;
@@ -262,6 +300,144 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
             if (c >= '0' && c <= '9' && rotationLen < sizeof(rotationBuf) - 1) {
                 rotationBuf[rotationLen++] = c;
                 rotationBuf[rotationLen] = '\0';
+            }
+        }
+        return;
+    }
+
+    if (inHostTextEntry) {
+        bool hasEnter = false, hasEsc = false, hasBackspace = false;
+        for (uint8_t i = 0; i < hidKeyCount; i++) {
+            if (hidKeys[i] == HID_ENTER) hasEnter = true;
+            if (hidKeys[i] == HID_ESC) hasEsc = true;
+            if (hidKeys[i] == HID_BACKSPACE) hasBackspace = true;
+        }
+        bool hasBacktick = false;
+        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+
+        if (hasEsc || hasBacktick) { // cancel, discard edits
+            tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
+            inHostTextEntry = false;
+            return;
+        }
+
+        if (hasBackspace) {
+            if (hostLen > 0) { hostLen--; hostBuf[hostLen] = '\0'; tone(TONE_ADJUST_HZ, TONE_ADJUST_MS); }
+            return;
+        }
+
+        if (hasEnter) {
+            AdsbClient::setCustomHost(hostBuf); // empty is valid - just means "not configured yet"
+            tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+            inHostTextEntry = false;
+            return;
+        }
+
+        // Printable ASCII only - same range the WiFi password field in
+        // wifi_setup_screen.cpp already accepts, since a hostname/IP needs
+        // more than just digits (unlike lat/lon/rotation entry).
+        for (uint8_t i = 0; i < count; i++) {
+            char c = chars[i];
+            if (c >= 32 && c < 127 && hostLen < sizeof(hostBuf) - 1) {
+                hostBuf[hostLen++] = c;
+                hostBuf[hostLen] = '\0';
+            }
+        }
+        return;
+    }
+
+    if (inPortEntry) {
+        bool hasEnter = false, hasEsc = false, hasBackspace = false;
+        for (uint8_t i = 0; i < hidKeyCount; i++) {
+            if (hidKeys[i] == HID_ENTER) hasEnter = true;
+            if (hidKeys[i] == HID_ESC) hasEsc = true;
+            if (hidKeys[i] == HID_BACKSPACE) hasBackspace = true;
+        }
+        bool hasBacktick = false;
+        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+
+        if (hasEsc || hasBacktick) {
+            tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
+            inPortEntry = false;
+            return;
+        }
+
+        if (hasBackspace) {
+            if (portLen > 0) { portLen--; portBuf[portLen] = '\0'; tone(TONE_ADJUST_HZ, TONE_ADJUST_MS); }
+            return;
+        }
+
+        if (hasEnter) {
+            long port = atol(portBuf);
+            if (portLen > 0 && port >= 1 && port <= 65535) {
+                AdsbClient::setCustomPort(static_cast<uint16_t>(port));
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                inPortEntry = false;
+            } else {
+                // Invalid/empty — low buzz, stay in the field to fix it.
+                tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
+            }
+            return;
+        }
+
+        for (uint8_t i = 0; i < count; i++) {
+            char c = chars[i];
+            if (c >= '0' && c <= '9' && portLen < sizeof(portBuf) - 1) {
+                portBuf[portLen++] = c;
+                portBuf[portLen] = '\0';
+            }
+        }
+        return;
+    }
+
+    if (inDataSourceSubscreen) {
+        bool hasEnter = false, hasEsc = false;
+        for (uint8_t i = 0; i < hidKeyCount; i++) {
+            if (hidKeys[i] == HID_ENTER) hasEnter = true;
+            if (hidKeys[i] == HID_ESC) hasEsc = true;
+        }
+        bool hasBacktick = false;
+        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+
+        if (hasEsc || hasBacktick) {
+            tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
+            inDataSourceSubscreen = false;
+            return;
+        }
+
+        for (uint8_t i = 0; i < count; i++) {
+            if (chars[i] == ';') {
+                dataSourceSubSelected = (dataSourceSubSelected + DATASOURCE_SUB_ROWS - 1) % DATASOURCE_SUB_ROWS;
+                tone(TONE_NAV_HZ, TONE_NAV_MS);
+            } else if (chars[i] == '.') {
+                dataSourceSubSelected = (dataSourceSubSelected + 1) % DATASOURCE_SUB_ROWS;
+                tone(TONE_NAV_HZ, TONE_NAV_MS);
+            } else if ((chars[i] == '/' || chars[i] == ',') && dataSourceSubSelected == 0) {
+                bool nowCustom = AdsbClient::currentDataSource() == AdsbClient::DataSource::CustomTar1090;
+                AdsbClient::setDataSource(nowCustom ? AdsbClient::DataSource::AdsbFi
+                                                     : AdsbClient::DataSource::CustomTar1090);
+                tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
+            }
+        }
+
+        if (hasEnter) {
+            switch (dataSourceSubSelected) {
+                case 0: {
+                    bool nowCustom = AdsbClient::currentDataSource() == AdsbClient::DataSource::CustomTar1090;
+                    AdsbClient::setDataSource(nowCustom ? AdsbClient::DataSource::AdsbFi
+                                                         : AdsbClient::DataSource::CustomTar1090);
+                    tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                    break;
+                }
+                case 1:
+                    tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                    startHostEntry();
+                    break;
+                case 2:
+                    tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                    startPortEntry();
+                    break;
+                default: break;
             }
         }
         return;
@@ -573,6 +749,11 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 inLocationSubscreen = true;
                 locationSubSelected = 0;
                 break;
+            case Item::DataSource:
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                inDataSourceSubscreen = true;
+                dataSourceSubSelected = 0;
+                break;
             case Item::Units:
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
                 inUnitsSubscreen = true;
@@ -734,6 +915,69 @@ void render() {
         return;
     }
 
+    if (inHostTextEntry) {
+        d.fillScreen(TFT_BLACK);
+        d.setTextSize(1);
+        d.setTextDatum(top_left);
+        d.setTextColor(TFT_GREEN);
+        d.setCursor(4, 4);
+        d.println("tar1090 Host");
+        d.drawFastHLine(0, 20, d.width(), TFT_DARKGREEN);
+
+        d.setTextColor(TFT_BLACK, TFT_GREEN);
+        d.setCursor(4, 28);
+        d.printf(" %s_ \n", hostBuf);
+
+        d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+        d.setCursor(4, 48);
+        d.println("Hostname or IP, e.g. 10.10.1.93");
+        d.println("Enter: set  Del: back  `: cancel");
+
+        d.pushSprite(0, 0);
+        return;
+    }
+
+    if (inPortEntry) {
+        d.fillScreen(TFT_BLACK);
+        d.setTextSize(1);
+        d.setTextDatum(top_left);
+        d.setTextColor(TFT_GREEN);
+        d.setCursor(4, 4);
+        d.println("tar1090 Port");
+        d.drawFastHLine(0, 20, d.width(), TFT_DARKGREEN);
+
+        d.setTextColor(TFT_BLACK, TFT_GREEN);
+        d.setCursor(4, 28);
+        d.printf(" %s_ \n", portBuf);
+
+        d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+        d.setCursor(4, 48);
+        d.println("Digits only, 1-65535");
+        d.println("Enter: set  Del: back  `: cancel");
+
+        d.pushSprite(0, 0);
+        return;
+    }
+
+    if (inDataSourceSubscreen) {
+        bool isCustom = AdsbClient::currentDataSource() == AdsbClient::DataSource::CustomTar1090;
+
+        char row0[32];
+        snprintf(row0, sizeof(row0), " Source: %s", isCustom ? "Custom" : "adsb.fi");
+
+        char row1[40];
+        const char* host = AdsbClient::customHost();
+        snprintf(row1, sizeof(row1), " Host: %s", host[0] ? host : "(not set)");
+
+        char row2[32];
+        snprintf(row2, sizeof(row2), " Port: %u", AdsbClient::customPort());
+
+        const char* rows[DATASOURCE_SUB_ROWS] = { row0, row1, row2 };
+        renderSubscreenRows(d, "Data Source", rows, DATASOURCE_SUB_ROWS, dataSourceSubSelected,
+                             ";/.=move Ent=set `=back");
+        return;
+    }
+
     if (inLocationSubscreen) {
         bool gpsOn = LocationManager::isGpsEnabled();
 
@@ -878,6 +1122,11 @@ void render() {
                     d.printf("GPS: OFF (%s)", locationSourceLabel());
                 }
                 break;
+            case Item::DataSource:
+                d.printf("Data Source: %s",
+                         AdsbClient::currentDataSource() == AdsbClient::DataSource::CustomTar1090
+                             ? "Custom" : "adsb.fi");
+                break;
             case Item::Units:
                 d.printf("Units: %s/%s", Units::distSuffix(), Units::altSuffix());
                 break;
@@ -927,7 +1176,8 @@ void render() {
     d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
     d.setCursor(2, d.height() - lineH - 1);
     if (selected == Item::Wifi || selected == Item::Location ||
-        selected == Item::Units || selected == Item::ProxBeep) {
+        selected == Item::DataSource || selected == Item::Units ||
+        selected == Item::ProxBeep) {
         d.print(";/.=move Ent=open");
     } else if (selected == Item::RadarRotation) {
         d.print(";/.=move ,//=adjust m=exact");
