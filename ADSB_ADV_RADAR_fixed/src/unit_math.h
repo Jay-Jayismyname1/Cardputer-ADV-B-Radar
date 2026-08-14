@@ -14,4 +14,10 @@ namespace UnitMath {
     inline float kmToMiles(float km) { return km / KM_PER_MILE; }
     inline float ftToMeters(float ft) { return ft / FT_PER_M; }
 
+    // Ground speed conversions - a knot IS a nautical mile per hour, so
+    // these reuse the same KM_PER_NM/KM_PER_MILE constants as distance
+    // rather than introducing separate speed-only conversion factors.
+    inline float knotsToKmh(float kt) { return kt * KM_PER_NM; }
+    inline float knotsToMph(float kt) { return kt * KM_PER_NM / KM_PER_MILE; }
+
 }

@@ -184,16 +184,18 @@ namespace {
                      distBuf, altBuf, vsBuf, a.headingDeg);
             radarSprite.drawString(line2, 4, panelY + 16);
 
-            // Ground speed is always shown in knots - the native ADS-B/
-            // aviation unit, same treatment as VS staying in ft/min - it
-            // isn't affected by the Distance unit toggle.
+            // Ground speed follows the same Distance unit as everything
+            // else (km/h, mph, or kt) rather than being its own separate
+            // setting - see Units::formatSpeed().
+            char spdBuf[16];
+            Units::formatSpeed(a.groundSpeedKt, spdBuf, sizeof(spdBuf));
             char line3[64];
             if (a.estSeats > 0) {
-                snprintf(line3, sizeof(line3), "%s  SPD %.0fkt  ~%u seats (est.)",
-                         a.typeCode[0] ? a.typeCode : "TYPE?", a.groundSpeedKt, a.estSeats);
+                snprintf(line3, sizeof(line3), "%s  SPD %s  ~%u seats (est.)",
+                         a.typeCode[0] ? a.typeCode : "TYPE?", spdBuf, a.estSeats);
             } else {
-                snprintf(line3, sizeof(line3), "%s  SPD %.0fkt  seats: n/a",
-                         a.typeCode[0] ? a.typeCode : "TYPE?", a.groundSpeedKt);
+                snprintf(line3, sizeof(line3), "%s  SPD %s  seats: n/a",
+                         a.typeCode[0] ? a.typeCode : "TYPE?", spdBuf);
             }
             radarSprite.drawString(line3, 4, panelY + 28);
         }

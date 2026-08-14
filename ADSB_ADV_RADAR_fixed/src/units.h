@@ -24,6 +24,15 @@ namespace Units {
     // gewählten Einheit, z.B. "42km", "23nm" oder "26mi".
     void formatDistance(float km, char* buf, size_t bufSize);
 
+    // Ground speed follows the same Distance unit rather than being its own
+    // separate setting - km/h with Km, kt (unchanged) with Nautical Miles,
+    // mph with Miles. A knot is already a nautical-mile-per-hour, so "kt"
+    // pairs naturally with the Nautical Miles distance unit the same way
+    // VS already pairs with the Altitude unit. Input is ground speed in
+    // knots (the unit the ADS-B feed reports it in), e.g. "250kt", "463km/h"
+    // or "288mph".
+    void formatSpeed(float knots, char* buf, size_t bufSize);
+
     // Nur das Einheiten-Kürzel ("km" / "nm" / "mi"), z.B. für eigene Labels.
     const char* distSuffix();
 

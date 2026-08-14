@@ -26,6 +26,16 @@ void test_zero_conversions_are_zero() {
     TEST_ASSERT_EQUAL_FLOAT(0.0f, UnitMath::kmToNm(0.0f));
     TEST_ASSERT_EQUAL_FLOAT(0.0f, UnitMath::kmToMiles(0.0f));
     TEST_ASSERT_EQUAL_FLOAT(0.0f, UnitMath::ftToMeters(0.0f));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, UnitMath::knotsToKmh(0.0f));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, UnitMath::knotsToMph(0.0f));
+}
+
+void test_knots_to_kmh() {
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 185.2f, UnitMath::knotsToKmh(100.0f));
+}
+
+void test_knots_to_mph() {
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 115.078f, UnitMath::knotsToMph(100.0f));
 }
 
 // --- AlertFilter ----------------------------------------------------------
@@ -63,6 +73,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_km_to_miles);
     RUN_TEST(test_ft_to_meters);
     RUN_TEST(test_zero_conversions_are_zero);
+    RUN_TEST(test_knots_to_kmh);
+    RUN_TEST(test_knots_to_mph);
 
     RUN_TEST(test_alert_within_both_thresholds);
     RUN_TEST(test_alert_boundary_values_are_inclusive);

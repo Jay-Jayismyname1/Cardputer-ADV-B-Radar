@@ -51,6 +51,20 @@ void formatDistance(float km, char* buf, size_t bufSize) {
     }
 }
 
+void formatSpeed(float knots, char* buf, size_t bufSize) {
+    switch (unit) {
+        case Distance::Km:
+            snprintf(buf, bufSize, "%.0fkm/h", UnitMath::knotsToKmh(knots));
+            break;
+        case Distance::Miles:
+            snprintf(buf, bufSize, "%.0fmph", UnitMath::knotsToMph(knots));
+            break;
+        default:
+            snprintf(buf, bufSize, "%.0fkt", knots);
+            break;
+    }
+}
+
 const char* distSuffix() {
     switch (unit) {
         case Distance::NauticalMiles: return "nm";
