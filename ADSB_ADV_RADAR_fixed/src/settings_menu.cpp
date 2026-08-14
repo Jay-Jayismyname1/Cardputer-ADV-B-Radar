@@ -462,6 +462,9 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
             } else if (chars[i] == '/' || chars[i] == ',') {
                 if (dataSourceSubSelected == DATASOURCE_ROW_SOURCE) {
                     AdsbClient::setDataSource(nextDataSource(AdsbClient::currentDataSource()));
+                    // A test result only speaks to the source it was run
+                    // against - once the selection moves on, it's stale.
+                    connTestState = ConnTestState::Idle;
                     // Row count/meaning may have just changed (e.g. leaving
                     // Custom hides Host/Port/Scheme) - keep the selection
                     // in range rather than pointing at a row that no
@@ -479,6 +482,7 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         if (hasEnter) {
             if (dataSourceSubSelected == DATASOURCE_ROW_SOURCE) {
                 AdsbClient::setDataSource(nextDataSource(AdsbClient::currentDataSource()));
+                connTestState = ConnTestState::Idle;
                 uint8_t newCount = dataSourceRowCount();
                 if (dataSourceSubSelected >= newCount) dataSourceSubSelected = newCount - 1;
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
@@ -813,12 +817,26 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
 }
 
 namespace {
-    // Shared row-list renderer for the three sub-screens below - draws a
-    // title, a divider, up to `rowCount` selectable text rows, and a footer
-    // hint, then pushes the sprite. Callers fill `rows[]` with the already-
-    // formatted label for each row.
-    void renderSubscreenRows(M5Canvas& d, const char* title, const char* const* rows,
-                              uint8_t rowCount, uint8_t selectedRow, const char* footer) {
+    // Row text is drawn larger than the title/footer for readability - 1.5x
+    // is the largest size that still keeps the longest real row (" Distance:
+    // Nautical Miles", 25 chars) under the 240px sprite width.
+    constexpr float kSubRowTextSize = 1.5f;
+
+    // Shared row-list renderer for the sub-screens below - draws a title, a
+    // divider, up to `rowCount` selectable text rows, and a footer hint.
+    // Returns the Y coordinate just below the last row, so callers that need
+    // an extra info line beneath the list (current coordinates, AMSL note,
+    // connection test result) can position it correctly without duplicating
+    // the row-height math.
+    //
+    // Deliberately does NOT push the sprite - callers must call
+    // d.pushSprite(0, 0) themselves exactly once, after drawing any extra
+    // content. An earlier version pushed here and callers pushed again after
+    // adding their extra line, which sent two separate frames per render()
+    // call: the first without the extra line, the second with it - visible
+    // as that line flickering on/off every call.
+    int16_t renderSubscreenRows(M5Canvas& d, const char* title, const char* const* rows,
+                                 uint8_t rowCount, uint8_t selectedRow, const char* footer) {
         d.fillScreen(TFT_BLACK);
         d.setTextSize(1);
         d.setTextDatum(top_left);
@@ -827,22 +845,24 @@ namespace {
         d.println(title);
         d.drawFastHLine(0, 20, d.width(), TFT_DARKGREEN);
 
+        d.setTextSize(kSubRowTextSize);
         int16_t y = 28;
-        int16_t rowH = d.fontHeight() + 2;
+        int16_t rowH = d.fontHeight() + 3;
         for (uint8_t i = 0; i < rowCount; i++) {
             bool isSelected = (i == selectedRow);
             if (isSelected) d.fillRect(0, y, d.width(), rowH, TFT_GREEN);
             d.setTextColor(isSelected ? TFT_BLACK : TFT_WHITE, isSelected ? TFT_GREEN : TFT_BLACK);
-            d.setCursor(4, y + 1);
+            d.setCursor(4, y + 2);
             d.print(rows[i]);
             y += rowH;
         }
 
+        d.setTextSize(1);
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
         d.setCursor(2, d.height() - d.fontHeight() - 1);
         d.print(footer);
 
-        d.pushSprite(0, 0);
+        return y;
     }
 }
 
@@ -1027,13 +1047,13 @@ void render() {
             rows[1] = " Test Connection";
         }
 
-        renderSubscreenRows(d, "Data Source", rows, rowCount, dataSourceSubSelected,
-                             ";/.=move Ent/,//=set `=back");
+        int16_t noteY = renderSubscreenRows(d, "Data Source", rows, rowCount, dataSourceSubSelected,
+                                             ";/.=move Ent/,//=set `=back");
 
         // Test result shown below the row list, same treatment as
         // Location's current-coordinates line and Prox Beep's AMSL note.
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-        d.setCursor(4, 28 + rowCount * (d.fontHeight() + 2) + 4);
+        d.setCursor(4, noteY + 4);
         switch (connTestState) {
             case ConnTestState::Testing:
                 d.print(" Testing...");
@@ -1069,8 +1089,8 @@ void render() {
         }
 
         const char* rows[LOCATION_SUB_ROWS] = { row0, row1 };
-        renderSubscreenRows(d, "Location", rows, LOCATION_SUB_ROWS, locationSubSelected,
-                             ";/.=move Ent/,//=set m=manual `=back");
+        int16_t noteY = renderSubscreenRows(d, "Location", rows, LOCATION_SUB_ROWS, locationSubSelected,
+                                             ";/.=move Ent/,//=set m=manual `=back");
 
         // Current location, shown below the row list rather than as a
         // selectable row - it's informational, not something to edit here
@@ -1080,7 +1100,7 @@ void render() {
         if (haveFix) LocationManager::getHomeLocation(lat, lon);
 
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-        d.setCursor(4, 28 + 2 * (d.fontHeight() + 2) + 4);
+        d.setCursor(4, noteY + 4);
         if (haveFix) {
             d.printf(" %.4f, %.4f", lat, lon);
         } else {
@@ -1103,6 +1123,7 @@ void render() {
         const char* rows[UNITS_SUB_ROWS] = { row0, row1 };
         renderSubscreenRows(d, "Units", rows, UNITS_SUB_ROWS, unitsSubSelected,
                              ";/.=move ,//=cycle `=back");
+        d.pushSprite(0, 0);
         return;
     }
 
@@ -1124,13 +1145,13 @@ void render() {
         snprintf(row2, sizeof(row2), " Beep: %s", ProximityAlert::isBeepEnabled() ? "On" : "Off");
 
         const char* rows[PROXBEEP_SUB_ROWS] = { row0, row1, row2 };
-        renderSubscreenRows(d, "Proximity Beep", rows, PROXBEEP_SUB_ROWS, proxBeepSubSelected,
-                             ";/.=move ,//=adjust `=back");
+        int16_t noteY = renderSubscreenRows(d, "Proximity Beep", rows, PROXBEEP_SUB_ROWS, proxBeepSubSelected,
+                                             ";/.=move ,//=adjust `=back");
 
         // Altitude filter is barometric (AMSL), not height above ground -
         // worth a permanent reminder since it's easy to assume otherwise.
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
-        d.setCursor(4, 28 + 3 * (d.fontHeight() + 2) + 4);
+        d.setCursor(4, noteY + 4);
         d.print(" Height filter is AMSL (baro alt)");
 
         d.pushSprite(0, 0);
