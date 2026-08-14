@@ -239,13 +239,12 @@ namespace {
         inRotationManualEntry = true;
     }
 
-    // Shared by both the main list's Location row and the Location
-    // sub-screen's Source row - "manual" reflects the user's persisted
-    // preference (LocationManager::SourcePref), not just whatever the
-    // current fix happens to be, so it stays stable across boots.
+    // Used by the main list's Location row - "Manual" reflects the user's
+    // persisted preference (LocationManager::SourcePref), not just whatever
+    // the current fix happens to be, so it stays stable across boots.
     const char* locationSourceLabel() {
         return (LocationManager::sourcePreference() == LocationManager::SourcePref::Manual)
-                   ? "manual" : "IP";
+                   ? "Manual" : "IP";
     }
 
     void startHostEntry() {
@@ -1213,11 +1212,11 @@ void render() {
         int16_t noteY = renderSubscreenRows(d, "Location", rows, rowCount, locationSubSelected,
                                              ";/.=move Ent/,//=set `=back");
 
-        // Informational line below the row list - GPS lock/satellite status
-        // while Hardware GPS is on, or the resolved IP-derived coordinates
-        // while Other Source is IP. Manual coordinates are already shown as
-        // editable Lat/Lon rows above, so nothing extra is drawn here for
-        // that case.
+        // Informational line(s) below the row list - GPS lock/satellite
+        // status while Hardware GPS is on, or the resolved IP-derived
+        // coordinates while Other Source is IP. Manual coordinates are
+        // already shown as editable Lat/Lon rows above, so nothing extra is
+        // drawn here for that case.
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
         d.setCursor(4, noteY + 4);
         if (gpsOn) {
@@ -1227,7 +1226,22 @@ void render() {
                 LocationManager::getHomeLocation(lat, lon);
                 d.printf(" %.4f, %.4f (Sats: %u)", lat, lon, sats);
             } else {
+                // No live lock - GPS being "on" doesn't mean the radar has
+                // nothing to work with, so spell out what it's actually
+                // using in the meantime rather than leaving that implicit.
                 d.printf(" No lock (Sats: %u)", sats);
+                d.setCursor(4, noteY + 4 + d.fontHeight() + 2);
+                switch (LocationManager::currentSource()) {
+                    case LocationManager::Source::Persisted:
+                        d.print(" Radar using last known fix");
+                        break;
+                    case LocationManager::Source::Manual:
+                        d.print(" Radar using manual coordinates");
+                        break;
+                    default:
+                        d.print(" Radar has no location yet");
+                        break;
+                }
             }
         } else if (!manual) {
             double lat = 0.0, lon = 0.0;
@@ -1345,15 +1359,33 @@ void render() {
         switch (it) {
             case Item::Wifi:
                 d.printf("WiFi: %s", WifiMgr::getState() == WifiMgr::State::Connected
-                                        ? "Connected" : "Not connected");
+                                        ? "Connected" : "Not Connected");
                 break;
             case Item::Location:
                 if (LocationManager::isGpsEnabled()) {
-                    d.printf("GPS: ON %s", LocationManager::hasGpsFix() ? "FIX" : "no fix");
+                    if (LocationManager::hasGpsFix()) {
+                        d.print("GPS: On (Fix)");
+                    } else {
+                        // GPS being "on" doesn't mean there's no location at
+                        // all - name what's actually backing the radar right
+                        // now instead of just saying "no fix" and leaving it
+                        // ambiguous.
+                        switch (LocationManager::currentSource()) {
+                            case LocationManager::Source::Persisted:
+                                d.print("GPS: No Lock (Last Fix)");
+                                break;
+                            case LocationManager::Source::Manual:
+                                d.print("GPS: No Lock (Manual)");
+                                break;
+                            default:
+                                d.print("GPS: No Lock");
+                                break;
+                        }
+                    }
                 } else if (LocationManager::currentSource() == LocationManager::Source::None) {
-                    d.print("GPS: OFF (no fix yet)");
+                    d.print("GPS: Off (no fix yet)");
                 } else {
-                    d.printf("GPS: OFF (%s)", locationSourceLabel());
+                    d.printf("GPS: Off (%s)", locationSourceLabel());
                 }
                 break;
             case Item::DataSource:

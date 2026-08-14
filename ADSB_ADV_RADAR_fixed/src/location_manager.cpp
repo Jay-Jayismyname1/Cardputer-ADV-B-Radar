@@ -36,6 +36,15 @@ namespace {
     uint32_t lastIpLookupAttemptMs = 0;
     constexpr uint32_t IP_LOOKUP_RETRY_MS = 15000;
 
+    // TinyGPSPlus's location.isValid() latches true forever once any fix
+    // has ever been parsed - it never resets on its own if the antenna
+    // later loses lock. location.age() (ms since the last successful fix)
+    // is what actually reflects "is this still current" - a fix older than
+    // this is treated as lost, not just "the last one we happened to see".
+    // 10s gives real GPS modules (typically ~1Hz updates) generous margin
+    // over a couple of missed sentences without masking an actual lock loss.
+    constexpr uint32_t GPS_FIX_STALE_MS = 10000;
+
     Source source = Source::None;
     SourcePref sourcePref = SourcePref::Auto;
 
@@ -138,13 +147,11 @@ void requestIpLookupIfNeeded() {
     // background IP lookup silently overwrite them.
     if (sourcePref == SourcePref::Manual) return;
     if (ipLookupDone) return;
-    // gpsEnabled, not just gps.location.isValid() - TinyGPSPlus's isValid()
-    // latches true forever after the first successfully parsed fix and has
-    // no concept of "GPS was turned off"; update() stops feeding it new
-    // sentences the instant gpsEnabled goes false, but isValid() itself
-    // never resets on its own. Without this check, disabling Hardware GPS
-    // after ever having had a fix would permanently block IP lookups too.
-    if (gpsEnabled && gps.location.isValid()) return;
+    // hasGpsFix(), not a raw isValid() check - see its own comment for why
+    // isValid() alone can't tell "GPS was turned off" or "lock was lost"
+    // apart from "still fine". Without this, either case would permanently
+    // block IP lookups from ever kicking in as a fallback.
+    if (hasGpsFix()) return;
     if (WiFi.status() != WL_CONNECTED) return;
 
     uint32_t now = millis();
@@ -184,11 +191,11 @@ void requestIpLookupIfNeeded() {
 }
 
 void getHomeLocation(double& lat, double& lon) {
-    // Same gpsEnabled + isValid() gating as requestIpLookupIfNeeded() above,
-    // and for the same reason - otherwise a device that ever had a GPS fix
-    // would keep reporting that frozen position forever after Hardware GPS
-    // is disabled, ignoring whatever Manual/IP source the user just picked.
-    if (gpsEnabled && gps.location.isValid()) {
+    // hasGpsFix() rather than a raw isValid() check - see its comment.
+    // Otherwise a device that ever had a GPS fix would keep reporting that
+    // frozen position forever, whether Hardware GPS was later disabled or
+    // just lost lock, ignoring whatever Manual/IP source should take over.
+    if (hasGpsFix()) {
         lat = gps.location.lat();
         lon = gps.location.lng();
         return;
@@ -205,7 +212,20 @@ void getHomeLocation(double& lat, double& lon) {
     }
 }
 
-Source currentSource() { return source; }
+Source currentSource() {
+    // `source` is only ever written to GpsFix by update() when a fresh fix
+    // actually arrives - nothing resets it back if that fix later goes
+    // stale (see hasGpsFix()'s comment on why isValid() can't tell). Without
+    // this check, the HUD/Location screen would keep reporting "GPS" as the
+    // active source long after getHomeLocation() had already fallen back to
+    // IP/Manual/a last-known position - reporting one source while actually
+    // using another.
+    if (source == Source::GpsFix && !hasGpsFix()) {
+        return (sourcePref == SourcePref::Manual && haveManualLocation) ? Source::Manual
+               : havePersisted ? Source::Persisted : Source::None;
+    }
+    return source;
+}
 
 void setManualLocation(double lat, double lon) {
     persistManualLocation(lat, lon);
@@ -275,7 +295,17 @@ const char* currentGpsPinLabel() {
     return Config::GPS_PIN_CANDIDATES[gpsPinIndex].label;
 }
 
-bool hasGpsFix() { return gpsEnabled && gps.location.isValid(); }
+bool hasGpsFix() {
+    // gpsEnabled: see setGpsEnabled()'s comment - update() stops feeding
+    // gps new sentences the instant this goes false, but isValid() itself
+    // never resets on its own, so it isn't enough by itself.
+    //
+    // age() <= GPS_FIX_STALE_MS: isValid() has the same problem for lock
+    // *loss* while still enabled - it latches true forever after the first
+    // fix and has no idea the antenna went indoors five minutes ago. age()
+    // is what actually says whether that fix is still current.
+    return gpsEnabled && gps.location.isValid() && gps.location.age() <= GPS_FIX_STALE_MS;
+}
 
 uint32_t satelliteCount() {
     return (gpsEnabled && gps.satellites.isValid()) ? gps.satellites.value() : 0;
