@@ -29,6 +29,7 @@ namespace {
     constexpr uint32_t IP_LOOKUP_RETRY_MS = 15000;
 
     Source source = Source::None;
+    SourcePref sourcePref = SourcePref::Auto;
 
     void startGpsSerialIfNeeded() {
         if (!gpsEnabled || gpsSerialStarted) return;
@@ -51,6 +52,7 @@ void init() {
     gpsEnabled = prefs.getBool("gpsEn", false);
     gpsPinIndex = prefs.getUChar("gpsPinIdx", 0);
     if (gpsPinIndex >= Config::GPS_PIN_CANDIDATE_COUNT) gpsPinIndex = 0;
+    sourcePref = static_cast<SourcePref>(prefs.getUChar("locSrc", static_cast<uint8_t>(SourcePref::Auto)));
 
     double lat = prefs.getDouble("homeLat", 0.0);
     double lon = prefs.getDouble("homeLon", 0.0);
@@ -58,7 +60,11 @@ void init() {
         lastLat = lat;
         lastLon = lon;
         havePersisted = true;
-        source = Source::Persisted;
+        // If the user had explicitly chosen Manual last session, report it
+        // as such right away rather than the more generic "Persisted",
+        // which read the same whether the coords came from GPS, IP, or a
+        // manual entry.
+        source = (sourcePref == SourcePref::Manual) ? Source::Manual : Source::Persisted;
     }
 
     startGpsSerialIfNeeded();
@@ -79,6 +85,9 @@ void update() {
 }
 
 void requestIpLookupIfNeeded() {
+    // User explicitly wants the saved coordinates only - never let a
+    // background IP lookup silently overwrite them.
+    if (sourcePref == SourcePref::Manual) return;
     if (ipLookupDone) return;
     if (gps.location.isValid()) return;
     if (WiFi.status() != WL_CONNECTED) return;
@@ -137,7 +146,27 @@ Source currentSource() { return source; }
 void setManualLocation(double lat, double lon) {
     persistLocation(lat, lon);
     source = Source::Manual;
+    sourcePref = SourcePref::Manual;
+    prefs.putUChar("locSrc", static_cast<uint8_t>(sourcePref));
 }
+
+void setSourceOverride(SourcePref pref) {
+    sourcePref = pref;
+    prefs.putUChar("locSrc", static_cast<uint8_t>(sourcePref));
+
+    if (pref == SourcePref::Manual) {
+        if (havePersisted) source = Source::Manual;
+    } else {
+        // Switching back to Auto/IP - drop any cached one-shot lookup
+        // state so a fresh IP fix is attempted promptly, instead of
+        // leaving whatever result (possibly stale, possibly never
+        // attempted) was cached while Manual was in effect.
+        ipLookupDone = false;
+        lastIpLookupAttemptMs = 0;
+    }
+}
+
+SourcePref sourcePreference() { return sourcePref; }
 
 void setGpsEnabled(bool enabled) {
     gpsEnabled = enabled;

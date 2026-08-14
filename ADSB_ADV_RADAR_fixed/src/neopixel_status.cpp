@@ -32,7 +32,6 @@ namespace {
     bool flashing = false;       // whether the current zone wants a flash
     bool flashOn = false;        // current flash phase
     uint32_t lastFlashToggleMs = 0;
-    bool risingEdgeThisTick = false;
 
     // True when at least one currently-tracked aircraft is squawking an
     // emergency code. Takes priority over the proximity zone colors and
@@ -164,13 +163,11 @@ void notifySweepAngle(float sweepAngleDeg) {
     northFlashOffAtMs = millis() + NORTH_FLASH_ON_MS;
     applyPixel(GREEN_COLOR);
     // Deliberately silent - this fires roughly every sweep revolution
-    // (4s at 90 deg/sec), so chirping here would get noisy fast. Only
-    // proximity/emergency flashes (via tick()'s rising edge) trigger the beep.
+    // (4s at 90 deg/sec), so chirping here would get noisy fast. The
+    // audible beep is owned entirely by ProximityAlert::checkAndAlert().
 }
 
 void tick(uint32_t now) {
-    risingEdgeThisTick = false;
-
     if (northFlashActive) {
         if (now >= northFlashOffAtMs) {
             northFlashActive = false;
@@ -183,15 +180,9 @@ void tick(uint32_t now) {
     uint32_t interval = emergencyActive ? EMERGENCY_FLASH_INTERVAL_MS : Config::FLASH_INTERVAL_MS;
     if (now - lastFlashToggleMs >= interval) {
         lastFlashToggleMs = now;
-        bool wasOn = flashOn;
         flashOn = !flashOn;
         applyPixel(flashOn ? baseColor : IDLE_OFF);
-        if (!wasOn && flashOn) risingEdgeThisTick = true;
     }
-}
-
-bool isFlashRisingEdge() {
-    return risingEdgeThisTick;
 }
 
 void setBrightnessPercent(uint8_t percent) {

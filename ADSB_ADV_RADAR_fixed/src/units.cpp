@@ -6,32 +6,61 @@ namespace Units {
 namespace {
     Preferences prefs;
     Distance unit = Distance::Km;
+    Altitude unitAlt = Altitude::Feet; // matches the firmware's previous ft-only behavior
 }
 
 void init() {
     prefs.begin("adsb_radar", false);
     unit = static_cast<Distance>(prefs.getUChar("distUnit", static_cast<uint8_t>(Distance::Km)));
+    unitAlt = static_cast<Altitude>(prefs.getUChar("altUnit", static_cast<uint8_t>(Altitude::Feet)));
 }
 
 Distance current() {
     return unit;
 }
 
-void toggle() {
-    unit = (unit == Distance::Km) ? Distance::NauticalMiles : Distance::Km;
+void toggleDistance() {
+    switch (unit) {
+        case Distance::Km:            unit = Distance::NauticalMiles; break;
+        case Distance::NauticalMiles: unit = Distance::Miles;         break;
+        case Distance::Miles:         unit = Distance::Km;            break;
+    }
     prefs.putUChar("distUnit", static_cast<uint8_t>(unit));
 }
 
+Altitude currentAltitude() {
+    return unitAlt;
+}
+
+void toggleAltitude() {
+    unitAlt = (unitAlt == Altitude::Feet) ? Altitude::Meters : Altitude::Feet;
+    prefs.putUChar("altUnit", static_cast<uint8_t>(unitAlt));
+}
+
 void formatDistance(float km, char* buf, size_t bufSize) {
-    if (unit == Distance::NauticalMiles) {
-        snprintf(buf, bufSize, "%.0fnm", km / KM_PER_NM);
-    } else {
-        snprintf(buf, bufSize, "%.0fkm", km);
+    switch (unit) {
+        case Distance::NauticalMiles:
+            snprintf(buf, bufSize, "%.0fnm", UnitMath::kmToNm(km));
+            break;
+        case Distance::Miles:
+            snprintf(buf, bufSize, "%.0fmi", UnitMath::kmToMiles(km));
+            break;
+        default:
+            snprintf(buf, bufSize, "%.0fkm", km);
+            break;
     }
 }
 
-const char* suffix() {
-    return unit == Distance::NauticalMiles ? "nm" : "km";
+const char* distSuffix() {
+    switch (unit) {
+        case Distance::NauticalMiles: return "nm";
+        case Distance::Miles:         return "mi";
+        default:                       return "km";
+    }
+}
+
+const char* altSuffix() {
+    return unitAlt == Altitude::Meters ? "m" : "ft";
 }
 
 }

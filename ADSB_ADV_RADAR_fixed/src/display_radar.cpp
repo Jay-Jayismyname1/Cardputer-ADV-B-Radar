@@ -161,9 +161,15 @@ namespace {
 
             char distBuf[12];
             Units::formatDistance(a.distanceKm, distBuf, sizeof(distBuf));
+            char altBuf[16];
+            if (Units::currentAltitude() == Units::Altitude::Meters) {
+                snprintf(altBuf, sizeof(altBuf), "%.0fm", UnitMath::ftToMeters((float)a.altBaroFt));
+            } else {
+                snprintf(altBuf, sizeof(altBuf), "%ldft", (long)a.altBaroFt);
+            }
             char line2[64];
-            snprintf(line2, sizeof(line2), "%s  ALT %ldft  VS %+dfpm  HDG %03.0f",
-                     distBuf, (long)a.altBaroFt, a.vertRateFtMin, a.headingDeg);
+            snprintf(line2, sizeof(line2), "%s  ALT %s  VS %+dfpm  HDG %03.0f",
+                     distBuf, altBuf, a.vertRateFtMin, a.headingDeg);
             radarSprite.drawString(line2, 4, panelY + 16);
 
             char line3[64];

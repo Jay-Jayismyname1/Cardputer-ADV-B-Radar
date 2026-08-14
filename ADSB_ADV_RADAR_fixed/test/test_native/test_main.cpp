@@ -1,0 +1,75 @@
+// Native (host) Unity tests for the pure, Arduino-free math extracted for
+// the settings overhaul - see platformio.ini [env:native]. Run with:
+//   pio test -e native
+#include <unity.h>
+#include "../../src/unit_math.h"
+#include "../../src/alert_filter.h"
+
+void setUp() {}
+void tearDown() {}
+
+// --- UnitMath -----------------------------------------------------------
+
+void test_km_to_nm() {
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.3197f, UnitMath::kmToNm(8.0f));
+}
+
+void test_km_to_miles() {
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.9710f, UnitMath::kmToMiles(8.0f));
+}
+
+void test_ft_to_meters() {
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 1524.0f, UnitMath::ftToMeters(5000.0f));
+}
+
+void test_zero_conversions_are_zero() {
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, UnitMath::kmToNm(0.0f));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, UnitMath::kmToMiles(0.0f));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, UnitMath::ftToMeters(0.0f));
+}
+
+// --- AlertFilter ----------------------------------------------------------
+
+void test_alert_within_both_thresholds() {
+    TEST_ASSERT_TRUE(AlertFilter::shouldAlert(5.0f, 3000.0f, false, 8.0f, 5000.0f));
+}
+
+void test_alert_boundary_values_are_inclusive() {
+    TEST_ASSERT_TRUE(AlertFilter::shouldAlert(8.0f, 5000.0f, false, 8.0f, 5000.0f));
+}
+
+void test_no_alert_when_distance_exceeds_threshold() {
+    TEST_ASSERT_FALSE(AlertFilter::shouldAlert(8.1f, 3000.0f, false, 8.0f, 5000.0f));
+}
+
+void test_no_alert_when_altitude_exceeds_threshold() {
+    TEST_ASSERT_FALSE(AlertFilter::shouldAlert(3.0f, 5001.0f, false, 8.0f, 5000.0f));
+}
+
+void test_no_alert_when_both_exceed_threshold() {
+    TEST_ASSERT_FALSE(AlertFilter::shouldAlert(50.0f, 40000.0f, false, 8.0f, 5000.0f));
+}
+
+void test_emergency_always_alerts_regardless_of_range() {
+    // Far away and high up - would normally never qualify, but an
+    // emergency squawk must always beep.
+    TEST_ASSERT_TRUE(AlertFilter::shouldAlert(200.0f, 40000.0f, true, 8.0f, 5000.0f));
+}
+
+int main(int argc, char** argv) {
+    UNITY_BEGIN();
+
+    RUN_TEST(test_km_to_nm);
+    RUN_TEST(test_km_to_miles);
+    RUN_TEST(test_ft_to_meters);
+    RUN_TEST(test_zero_conversions_are_zero);
+
+    RUN_TEST(test_alert_within_both_thresholds);
+    RUN_TEST(test_alert_boundary_values_are_inclusive);
+    RUN_TEST(test_no_alert_when_distance_exceeds_threshold);
+    RUN_TEST(test_no_alert_when_altitude_exceeds_threshold);
+    RUN_TEST(test_no_alert_when_both_exceed_threshold);
+    RUN_TEST(test_emergency_always_alerts_regardless_of_range);
+
+    return UNITY_END();
+}

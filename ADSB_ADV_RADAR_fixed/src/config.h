@@ -22,6 +22,7 @@ namespace Config {
     constexpr uint32_t HTTP_TIMEOUT_MS = 6000;
 
     constexpr float DEFAULT_PROXIMITY_ALERT_KM = 8.0f;
+    constexpr float DEFAULT_PROXIMITY_ALERT_ALT_FT = 5000.0f;
     constexpr uint32_t ALERT_RETRIGGER_COOLDOWN_MS = 30000;
     constexpr uint16_t ALERT_TONE_HZ = 2400;
     constexpr uint16_t ALERT_TONE_MS = 180;

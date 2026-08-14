@@ -340,6 +340,7 @@ void loop() {
             AircraftTable::postFetchUpdate(lastFetchHomeLat, lastFetchHomeLon);
             if (selectedIndex >= AircraftTable::validCount()) selectedIndex = 0;
             FlightLogbook::update(AircraftTable::raw(), AircraftTable::validCount());
+            ProximityAlert::checkAndAlert(AircraftTable::raw(), AircraftTable::validCount());
         }
 
         // Un-gated from `result.ok`, same as before: needs to run even on a
@@ -349,10 +350,13 @@ void loop() {
                                 AircraftTable::validCount() > 0 ? (int)selectedIndex : -1);
     }
 
+    // The audible proximity beep is owned by ProximityAlert::checkAndAlert()
+    // (called above, once per fetch), which is gated on the user's
+    // configured max distance/height. NeoPixel flashing below is purely
+    // visual - it must not also trigger a beep here, or an aircraft inside
+    // the LED's fixed 2 km "visual" zone would beep even when it's outside
+    // the user's configured thresholds.
     NeopixelStatus::tick(now);
-    if (NeopixelStatus::isFlashRisingEdge()) {
-        ProximityAlert::beepOnce();
-    }
 
     if (screenMode == ScreenMode::Radar) {
         uint32_t deltaMs = now - lastFrameMs;
