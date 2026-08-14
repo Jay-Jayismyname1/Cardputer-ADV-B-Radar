@@ -30,9 +30,12 @@ namespace Config {
     // beep, hard-capped so a busy approach corridor can't turn into a
     // continuous buzz. Beeps are queued and played one per tick (see
     // ProximityAlert::tick()) rather than all at once, so this many tones
-    // land ALERT_BEEP_GAP_MS apart instead of overlapping.
+    // land ALERT_BEEP_GAP_MS apart instead of overlapping. Bumped +500ms
+    // (was 250ms) - back to back beeps only ever happen when there's more
+    // than one aircraft queued, and the tighter gap read as one continuous
+    // buzz rather than distinct tones per aircraft.
     constexpr uint8_t MAX_ALERT_BEEPS = 5;
-    constexpr uint32_t ALERT_BEEP_GAP_MS = 250;
+    constexpr uint32_t ALERT_BEEP_GAP_MS = 750;
 
     constexpr uint8_t MAX_TRACKED_AIRCRAFT = 40;
 
