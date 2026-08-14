@@ -2,6 +2,7 @@
 // the settings overhaul - see platformio.ini [env:native]. Run with:
 //   pio test -e native
 #include <unity.h>
+#include <math.h>
 #include "../../src/unit_math.h"
 #include "../../src/alert_filter.h"
 #include "../../src/radar_math.h"
@@ -63,6 +64,55 @@ void test_rotation_north_indicator_position() {
     TEST_ASSERT_FLOAT_WITHIN(0.001f, 225.0f, RadarMath::applyRotation(0.0f, 135.0f));
 }
 
+// --- RadarMath::rotateVector -----------------------------------------------
+// Regression coverage for a real bug found by inspection: the aircraft
+// heading-arrow triangle used to rotate its local "nose forward" (0,-1)
+// vertex with the wrong sign convention - a mirror, not a rotation. It
+// looked fine at heading 0/180 (sin(0)=sin(180)=0 hides the bug) but pointed
+// every East/West-leaning heading to the wrong side of the radar (e.g. a
+// heading-90/East aircraft's arrow pointed West). These pin the same
+// dx=sin/dy=-cos convention RadarMath::toScreen() already uses.
+
+void test_rotate_vector_heading_zero_points_up() {
+    RadarMath::ScreenVector v = RadarMath::rotateVector(0.0f, -1.0f, 0.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, v.dx);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, -1.0f, v.dy);
+}
+
+void test_rotate_vector_heading_east_points_right() {
+    // This is the case the old code got backwards.
+    RadarMath::ScreenVector v = RadarMath::rotateVector(0.0f, -1.0f, 90.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.0f, v.dx);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, v.dy);
+}
+
+void test_rotate_vector_heading_west_points_left() {
+    RadarMath::ScreenVector v = RadarMath::rotateVector(0.0f, -1.0f, 270.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, -1.0f, v.dx);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, v.dy);
+}
+
+void test_rotate_vector_heading_south_points_down() {
+    RadarMath::ScreenVector v = RadarMath::rotateVector(0.0f, -1.0f, 180.0f);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, v.dx);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 1.0f, v.dy);
+}
+
+void test_rotate_vector_matches_toScreen_bearing_mapping() {
+    // rotateVector() applied to the "forward" unit vector must agree with
+    // toScreen()'s own dx/dy for the same angle, at every 45 degrees - the
+    // arrow and the blip position must always point the same way.
+    const float headings[] = {0, 45, 90, 135, 180, 225, 270, 315};
+    for (float h : headings) {
+        RadarMath::ScreenVector v = RadarMath::rotateVector(0.0f, -1.0f, h);
+        double rad = h * (M_PI / 180.0);
+        float expectedDx = static_cast<float>(sin(rad));
+        float expectedDy = static_cast<float>(-cos(rad));
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, expectedDx, v.dx);
+        TEST_ASSERT_FLOAT_WITHIN(0.001f, expectedDy, v.dy);
+    }
+}
+
 // --- AlertFilter ----------------------------------------------------------
 
 void test_alert_within_both_thresholds() {
@@ -105,6 +155,12 @@ int main(int argc, char** argv) {
     RUN_TEST(test_rotation_matching_bearing_becomes_zero);
     RUN_TEST(test_rotation_wraps_below_zero);
     RUN_TEST(test_rotation_north_indicator_position);
+
+    RUN_TEST(test_rotate_vector_heading_zero_points_up);
+    RUN_TEST(test_rotate_vector_heading_east_points_right);
+    RUN_TEST(test_rotate_vector_heading_west_points_left);
+    RUN_TEST(test_rotate_vector_heading_south_points_down);
+    RUN_TEST(test_rotate_vector_matches_toScreen_bearing_mapping);
 
     RUN_TEST(test_alert_within_both_thresholds);
     RUN_TEST(test_alert_boundary_values_are_inclusive);

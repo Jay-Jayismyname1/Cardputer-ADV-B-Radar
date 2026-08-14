@@ -84,29 +84,29 @@ namespace {
         }
     }
 
-    // Draws a small triangle pointing along `headingDeg` (0 = up/North),
-    // centered at (cx, cy). Replaces the plain dot blip so heading is
-    // visible on the radar at a glance, not just in the HUD panel text.
+    // Draws a small triangle pointing along `headingDeg` (0 = up/North,
+    // clockwise), centered at (cx, cy). Replaces the plain dot blip so
+    // heading is visible on the radar at a glance, not just in the HUD
+    // panel text.
     void drawHeadingArrow(int16_t cx, int16_t cy, float headingDeg, uint16_t color, bool selected) {
         int16_t len = selected ? 7 : 5;
         int16_t wing = selected ? 4 : 3;
-        double rad = headingDeg * DEG_TO_RAD;
-        double sinA = sin(rad), cosA = cos(rad);
 
         // Local-space triangle: nose forward, two back corners.
-        float noseX = 0, noseY = -len;
-        float leftX = -wing, leftY = len * 0.6f;
-        float rightX = wing, rightY = len * 0.6f;
-
+        // RadarMath::rotateVector() rotates these using the same
+        // "0=up, clockwise" convention RadarMath::toScreen() uses to place
+        // the aircraft itself, so the arrow points the same way on screen
+        // that the aircraft's actual bearing/heading would.
         auto rotate = [&](float lx, float ly, int16_t& outX, int16_t& outY) {
-            outX = cx + static_cast<int16_t>(lx * cosA + ly * sinA);
-            outY = cy + static_cast<int16_t>(-lx * sinA + ly * cosA);
+            RadarMath::ScreenVector v = RadarMath::rotateVector(lx, ly, headingDeg);
+            outX = cx + static_cast<int16_t>(v.dx);
+            outY = cy + static_cast<int16_t>(v.dy);
         };
 
         int16_t nx, ny, lx2, ly2, rx2, ry2;
-        rotate(noseX, noseY, nx, ny);
-        rotate(leftX, leftY, lx2, ly2);
-        rotate(rightX, rightY, rx2, ry2);
+        rotate(0, -len, nx, ny);              // nose
+        rotate(-wing, len * 0.6f, lx2, ly2);   // back-left corner
+        rotate(wing, len * 0.6f, rx2, ry2);    // back-right corner
 
         radarSprite.fillTriangle(nx, ny, lx2, ly2, rx2, ry2, color);
         if (selected) {

@@ -52,4 +52,22 @@ float applyRotation(float bearingDeg, float rotationDeg) {
     return result;
 }
 
+ScreenVector rotateVector(float lx, float ly, float angleDeg) {
+    double rad = angleDeg * DEG2RAD;
+    double s = sin(rad), c = cos(rad);
+    // Standard 2D rotation matrix [c -s; s c] applied to (lx, ly). This is
+    // the same "0=up, clockwise-positive" convention as toScreen(): at
+    // angleDeg=90 (East), local "forward" (0,-1) maps to (+1, 0) - i.e.
+    // matches toScreen()'s dx=sin(90)=+1, dy=-cos(90)=0 for a bearing-90
+    // aircraft. (An earlier version of this had the two sign flips
+    // swapped, which is a mirror, not a rotation - it left North/South
+    // headings looking correct by coincidence, since sin(0)=sin(180)=0,
+    // but silently pointed every East/West-leaning heading arrow to the
+    // wrong side of the radar.)
+    return ScreenVector{
+        static_cast<float>(lx * c - ly * s),
+        static_cast<float>(lx * s + ly * c)
+    };
+}
+
 } // namespace RadarMath
