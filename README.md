@@ -2,7 +2,7 @@
 # Cardputer-ABS-B-Radar
 A flight tracking firmware for the Cardputer ADV, with proximity alerts
 
-No GPS or external modules are required, this works on Wifi with the adsb.fi API, external modules can be used for precise tracking but they have not been tested due to lack of equipment
+No GPS or external modules are required, this works on Wifi with the adsb.fi API by default (switchable in Settings to adsb.lol, airplanes.live, or your own tar1090/readsb feeder), external modules can be used for precise tracking but they have not been tested due to lack of equipment
 
 Controls:
 Tab - Cycles between flights on radar to view information
@@ -21,6 +21,7 @@ Settings sub-screens:
 - Location: toggle GPS on/off, cycle the GPS RX/TX pin pair while GPS is on, or (while GPS is off) switch between "IP" (coarse location from your internet connection) and "Manual" (a saved lat/lon you enter yourself, via the `m` key). Manual mode is sticky - once picked, it's remembered across reboots and won't get silently overwritten by an IP lookup.
 - Units: distance in km, nautical miles, or statute miles; altitude in feet or meters. Applies to the HUD, the range scale, and the Proximity Beep sub-screen.
 - Proximity Beep: a max distance and a max height, both using whatever units you picked above - a plane only triggers the beep once it's within *both*. The height filter is barometric altitude (AMSL), not height above ground. Emergency squawks (7500/7600/7700) always beep regardless of these thresholds.
+- Data Source: cycle between adsb.fi, adsb.lol, airplanes.live, or your own tar1090/readsb server (Custom). Custom needs a host/IP or hostname, port, and HTTP/HTTPS scheme; there's a "Test Connection" action that checks it's actually reachable and looks like a real readsb/tar1090 instance before you switch to it.
 
 Features:
 Selecting flight blips will show Flight number, Flight reg, Airline, distance from flight (your chosen distance unit), Altitude (your chosen altitude unit), Verticle speed (VS), Heading (HDG), Airplane type and estimated seats (Estimated souls on board)

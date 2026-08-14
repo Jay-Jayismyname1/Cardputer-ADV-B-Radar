@@ -27,11 +27,12 @@ namespace {
     WiFiClientSecure persistentClient;
     bool clientConfigured = false;
 
-    // --- Data source (adsb.fi vs. user's own tar1090/readsb) --------------
+    // --- Data source (hosted APIs vs. user's own tar1090/readsb) ----------
     Preferences prefs;
     DataSource dataSource = DataSource::AdsbFi;
     char customHostBuf[Config::TAR1090_HOST_MAX_LEN] = "";
     uint16_t customPortVal = Config::DEFAULT_TAR1090_PORT;
+    bool customUseHttpsVal = false;
 
     // --- Background task state --------------------------------------------
     // The fetch task runs on core 0 and writes into workTable/workResult.
@@ -232,8 +233,14 @@ namespace {
         return result;
     }
 
-    FetchResult fetchAdsbFi(double homeLat, double homeLon, float radiusKm,
-                             Aircraft* table, uint8_t tableCapacity) {
+    // Shared by adsb.fi, adsb.lol and airplanes.live - all three are free,
+    // hosted HTTPS APIs with an identical "ac"-array JSON shape, differing
+    // only in host and how the lat/lon/radius query is shaped into the URL
+    // path (`pathFmt` is a printf format taking (lat, lon, radiusKm) in
+    // that order - confirmed against all three live during research).
+    FetchResult fetchHostedApi(const char* apiHost, const char* pathFmt,
+                                double homeLat, double homeLon, float radiusKm,
+                                Aircraft* table, uint8_t tableCapacity) {
         FetchResult result;
 
         if (WiFi.status() != WL_CONNECTED) return result;
@@ -244,12 +251,12 @@ namespace {
             clientConfigured = true;
         }
 
-        HTTPClient http;
-        char url[160];
-        snprintf(url, sizeof(url),
-                 "https://%s/api/v3/lat/%.5f/lon/%.5f/dist/%.0f",
-                 Config::ADSB_API_HOST, homeLat, homeLon, radiusKm);
+        char path[96];
+        snprintf(path, sizeof(path), pathFmt, homeLat, homeLon, radiusKm);
+        char url[192];
+        snprintf(url, sizeof(url), "https://%s%s", apiHost, path);
 
+        HTTPClient http;
         http.setTimeout(Config::HTTP_TIMEOUT_MS);
         if (!http.begin(persistentClient, url)) return result;
         http.setReuse(true);
@@ -269,11 +276,31 @@ namespace {
         return result;
     }
 
-    // Plain HTTP, no TLS - matches the transport tar1090/readsb instances
+    FetchResult fetchAdsbFi(double homeLat, double homeLon, float radiusKm,
+                             Aircraft* table, uint8_t tableCapacity) {
+        return fetchHostedApi(Config::ADSB_API_HOST, "/api/v3/lat/%.5f/lon/%.5f/dist/%.0f",
+                               homeLat, homeLon, radiusKm, table, tableCapacity);
+    }
+
+    FetchResult fetchAdsbLol(double homeLat, double homeLon, float radiusKm,
+                              Aircraft* table, uint8_t tableCapacity) {
+        return fetchHostedApi(Config::ADSB_LOL_HOST, "/v2/lat/%.5f/lon/%.5f/dist/%.0f",
+                               homeLat, homeLon, radiusKm, table, tableCapacity);
+    }
+
+    FetchResult fetchAirplanesLive(double homeLat, double homeLon, float radiusKm,
+                                    Aircraft* table, uint8_t tableCapacity) {
+        // Positional path - lat, lon, dist with no "lat"/"lon"/"dist" literal
+        // segments, unlike the other two hosted APIs.
+        return fetchHostedApi(Config::AIRPLANES_LIVE_HOST, "/v2/point/%.5f/%.5f/%.0f",
+                               homeLat, homeLon, radiusKm, table, tableCapacity);
+    }
+
+    // Custom tar1090/readsb instance - either plain HTTP or HTTPS (self-
+    // signed certs accepted, same as the hosted APIs above) depending on
+    // customUseHttpsVal, matching the transport tar1090/readsb instances
     // actually serve on (confirmed against two live instances during
-    // research), and mirrors the plain WiFiClient+HTTPClient pattern
-    // already used elsewhere in this codebase for the IP-geolocation
-    // lookup above, rather than the WiFiClientSecure setup adsb.fi needs.
+    // research - both plain HTTP, but some setups reverse-proxy with TLS).
     FetchResult fetchTar1090(double homeLat, double homeLon, float radiusKm,
                               Aircraft* table, uint8_t tableCapacity) {
         FetchResult result;
@@ -281,14 +308,27 @@ namespace {
         if (WiFi.status() != WL_CONNECTED) return result;
         if (customHostBuf[0] == '\0') return result; // not configured yet
 
-        WiFiClient client;
-        HTTPClient http;
-        char url[160];
-        snprintf(url, sizeof(url), "http://%s:%u%s",
+        char url[192];
+        snprintf(url, sizeof(url), "%s://%s:%u%s",
+                 customUseHttpsVal ? "https" : "http",
                  customHostBuf, customPortVal, Config::TAR1090_AIRCRAFT_PATH);
 
+        HTTPClient http;
         http.setTimeout(Config::HTTP_TIMEOUT_MS);
-        if (!http.begin(client, url)) return result;
+
+        bool began;
+        WiFiClient plainClient;
+        if (customUseHttpsVal) {
+            if (!clientConfigured) {
+                persistentClient.setInsecure();
+                persistentClient.setTimeout(Config::HTTP_TIMEOUT_MS);
+                clientConfigured = true;
+            }
+            began = http.begin(persistentClient, url);
+        } else {
+            began = http.begin(plainClient, url);
+        }
+        if (!began) return result;
 
         int code = http.GET();
         result.httpCode = code;
@@ -338,6 +378,7 @@ void init() {
     customHostBuf[sizeof(customHostBuf) - 1] = '\0';
 
     customPortVal = prefs.getUShort("t1090Port", Config::DEFAULT_TAR1090_PORT);
+    customUseHttpsVal = prefs.getBool("t1090Https", false);
 }
 
 void setDataSource(DataSource src) {
@@ -362,12 +403,101 @@ void setCustomPort(uint16_t port) {
 
 uint16_t customPort() { return customPortVal; }
 
+void setCustomUseHttps(bool useHttps) {
+    customUseHttpsVal = useHttps;
+    prefs.putBool("t1090Https", useHttps);
+}
+
+bool customUseHttps() { return customUseHttpsVal; }
+
+ConnectionTestResult testCustomConnection() {
+    ConnectionTestResult result;
+
+    if (WiFi.status() != WL_CONNECTED) {
+        strncpy(result.message, "WiFi not connected", sizeof(result.message) - 1);
+        return result;
+    }
+    if (customHostBuf[0] == '\0') {
+        strncpy(result.message, "No host configured", sizeof(result.message) - 1);
+        return result;
+    }
+
+    char url[192];
+    snprintf(url, sizeof(url), "%s://%s:%u%s",
+             customUseHttpsVal ? "https" : "http",
+             customHostBuf, customPortVal, Config::TAR1090_RECEIVER_PATH);
+
+    HTTPClient http;
+    http.setTimeout(Config::HTTP_TIMEOUT_MS);
+
+    // Deliberately local, throwaway clients here rather than the shared
+    // persistentClient the background fetch task uses - this is called
+    // synchronously from the Settings UI (main loop, core 1) and must not
+    // touch state the fetch task (core 0) might be using concurrently.
+    bool began;
+    WiFiClient plainClient;
+    WiFiClientSecure secureClient;
+    if (customUseHttpsVal) {
+        secureClient.setInsecure();
+        secureClient.setTimeout(Config::HTTP_TIMEOUT_MS);
+        began = http.begin(secureClient, url);
+    } else {
+        began = http.begin(plainClient, url);
+    }
+
+    if (!began) {
+        strncpy(result.message, "Invalid host/URL", sizeof(result.message) - 1);
+        return result;
+    }
+
+    int code = http.GET();
+    result.httpCode = code;
+
+    if (code != HTTP_CODE_OK) {
+        http.end();
+        snprintf(result.message, sizeof(result.message), "Failed (HTTP %d)", code);
+        return result;
+    }
+
+    // Confirm the response actually looks like a readsb/tar1090
+    // receiver.json - "refresh" (the UI auto-refresh interval, ms) is
+    // present in every version seen during research - rather than just
+    // trusting any 200 OK from whatever's listening on that host:port.
+    JsonDocument filter;
+    filter["version"] = true;
+    filter["refresh"] = true;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(
+        doc, http.getStream(), DeserializationOption::Filter(filter));
+    http.end();
+
+    if (err || !doc["refresh"].is<int>()) {
+        strncpy(result.message, "Not a readsb/tar1090 server", sizeof(result.message) - 1);
+        return result;
+    }
+
+    result.ok = true;
+    const char* ver = doc["version"] | "";
+    if (ver[0]) {
+        snprintf(result.message, sizeof(result.message), "OK (v%s)", ver);
+    } else {
+        strncpy(result.message, "OK", sizeof(result.message) - 1);
+    }
+    return result;
+}
+
 FetchResult fetch(double homeLat, double homeLon, float radiusKm,
                    Aircraft* table, uint8_t tableCapacity) {
-    if (dataSource == DataSource::CustomTar1090) {
-        return fetchTar1090(homeLat, homeLon, radiusKm, table, tableCapacity);
+    switch (dataSource) {
+        case DataSource::AdsbLol:
+            return fetchAdsbLol(homeLat, homeLon, radiusKm, table, tableCapacity);
+        case DataSource::AirplanesLive:
+            return fetchAirplanesLive(homeLat, homeLon, radiusKm, table, tableCapacity);
+        case DataSource::CustomTar1090:
+            return fetchTar1090(homeLat, homeLon, radiusKm, table, tableCapacity);
+        default:
+            return fetchAdsbFi(homeLat, homeLon, radiusKm, table, tableCapacity);
     }
-    return fetchAdsbFi(homeLat, homeLon, radiusKm, table, tableCapacity);
 }
 
 void startBackgroundTask() {

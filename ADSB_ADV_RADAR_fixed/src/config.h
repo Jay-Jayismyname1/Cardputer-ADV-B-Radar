@@ -21,13 +21,26 @@ namespace Config {
     constexpr uint32_t FETCH_INTERVAL_MS = 8000;
     constexpr uint32_t HTTP_TIMEOUT_MS = 6000;
 
-    // A user-supplied tar1090/readsb instance is an alternative to the
-    // above adsb.fi API (see AdsbClient::DataSource) - plain HTTP, no
-    // built-in range filtering server-side (unlike adsb.fi's own radius
-    // query), so the app filters by range client-side instead.
+    // Two more free, community-run feeders with the identical adsb.fi-style
+    // "ac" JSON shape - confirmed live during research. adsb.lol uses the
+    // same /v2/lat/{lat}/lon/{lon}/dist/{km} URL shape as adsb.fi; airplanes.live
+    // uses a positional /v2/point/{lat}/{lon}/{km} instead. (globe.adsbexchange.com
+    // was also tried and explicitly rejected the request - "403 Forbidden by
+    // administrative rules" - and ADS-B Exchange's real API is a paid RapidAPI
+    // product, so it was deliberately left out rather than worked around.)
+    constexpr const char* ADSB_LOL_HOST = "api.adsb.lol";
+    constexpr const char* AIRPLANES_LIVE_HOST = "api.airplanes.live";
+
+    // A user-supplied tar1090/readsb instance is a further alternative to
+    // all of the above (see AdsbClient::DataSource) - the user's own
+    // host:port, either plain HTTP or HTTPS (self-signed certs accepted,
+    // same as the hosted APIs above), with no built-in range filtering
+    // server-side (unlike the hosted APIs' own radius query), so the app
+    // filters by range client-side instead.
     constexpr uint16_t DEFAULT_TAR1090_PORT = 8080;
-    constexpr uint8_t TAR1090_HOST_MAX_LEN = 48; // hostname or IP, e.g. "10.10.1.93"
+    constexpr uint8_t TAR1090_HOST_MAX_LEN = 64; // hostname or IP, e.g. "adsb.mydomain.com"
     constexpr const char* TAR1090_AIRCRAFT_PATH = "/data/aircraft.json";
+    constexpr const char* TAR1090_RECEIVER_PATH = "/data/receiver.json"; // small, used by the settings "Test Connection" check
 
     constexpr float DEFAULT_PROXIMITY_ALERT_KM = 8.0f;
     constexpr float DEFAULT_PROXIMITY_ALERT_ALT_FT = 5000.0f;

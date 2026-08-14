@@ -72,13 +72,19 @@ namespace {
     uint8_t locationSubSelected = 0;
     constexpr uint8_t LOCATION_SUB_ROWS = 2;
 
-    // Data Source sub-screen: adsb.fi/Custom toggle, host, port. Host/port
-    // are only meaningful while Custom is selected, but editing them while
-    // adsb.fi is active is harmless - they just won't be used until the
-    // user switches Source to Custom.
+    // Data Source sub-screen: Source cycle (adsb.fi/adsb.lol/airplanes.live/
+    // Custom), host, port, scheme, and a Test Connection action. Host/port/
+    // scheme are only meaningful while Custom is selected, but editing them
+    // while a hosted API is active is harmless - they just won't be used
+    // until the user switches Source to Custom.
     bool inDataSourceSubscreen = false;
     uint8_t dataSourceSubSelected = 0;
-    constexpr uint8_t DATASOURCE_SUB_ROWS = 3;
+    constexpr uint8_t DATASOURCE_SUB_ROWS = 5;
+    constexpr uint8_t DATASOURCE_ROW_SOURCE = 0;
+    constexpr uint8_t DATASOURCE_ROW_HOST   = 1;
+    constexpr uint8_t DATASOURCE_ROW_PORT   = 2;
+    constexpr uint8_t DATASOURCE_ROW_SCHEME = 3;
+    constexpr uint8_t DATASOURCE_ROW_TEST   = 4;
 
     // Host is free-text (hostname or IP) - same printable-ASCII entry
     // pattern already used for the WiFi password field in
@@ -93,6 +99,31 @@ namespace {
     bool inPortEntry = false;
     char portBuf[6] = ""; // up to 65535
     uint8_t portLen = 0;
+
+    // Test Connection result, shown below the row list until the next test
+    // (or until the sub-screen is left). Idle means "never tested this
+    // session".
+    enum class ConnTestState : uint8_t { Idle, Testing, Ok, Failed };
+    ConnTestState connTestState = ConnTestState::Idle;
+    char connTestMsg[40] = "";
+
+    const char* dataSourceLabel(AdsbClient::DataSource src) {
+        switch (src) {
+            case AdsbClient::DataSource::AdsbLol:       return "adsb.lol";
+            case AdsbClient::DataSource::AirplanesLive: return "airplanes.live";
+            case AdsbClient::DataSource::CustomTar1090: return "Custom";
+            default:                                     return "adsb.fi";
+        }
+    }
+
+    AdsbClient::DataSource nextDataSource(AdsbClient::DataSource src) {
+        switch (src) {
+            case AdsbClient::DataSource::AdsbFi:        return AdsbClient::DataSource::AdsbLol;
+            case AdsbClient::DataSource::AdsbLol:       return AdsbClient::DataSource::AirplanesLive;
+            case AdsbClient::DataSource::AirplanesLive: return AdsbClient::DataSource::CustomTar1090;
+            default:                                     return AdsbClient::DataSource::AdsbFi;
+        }
+    }
 
     // Units sub-screen: distance + altitude, each a simple cycle.
     bool inUnitsSubscreen = false;
@@ -197,6 +228,7 @@ void onEnter() {
     inUnitsSubscreen = false;
     inProxBeepSubscreen = false;
     inRotationManualEntry = false;
+    connTestState = ConnTestState::Idle;
     done = false;
 }
 
@@ -412,32 +444,45 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
             } else if (chars[i] == '.') {
                 dataSourceSubSelected = (dataSourceSubSelected + 1) % DATASOURCE_SUB_ROWS;
                 tone(TONE_NAV_HZ, TONE_NAV_MS);
-            } else if ((chars[i] == '/' || chars[i] == ',') && dataSourceSubSelected == 0) {
-                bool nowCustom = AdsbClient::currentDataSource() == AdsbClient::DataSource::CustomTar1090;
-                AdsbClient::setDataSource(nowCustom ? AdsbClient::DataSource::AdsbFi
-                                                     : AdsbClient::DataSource::CustomTar1090);
-                tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
+            } else if (chars[i] == '/' || chars[i] == ',') {
+                if (dataSourceSubSelected == DATASOURCE_ROW_SOURCE) {
+                    AdsbClient::setDataSource(nextDataSource(AdsbClient::currentDataSource()));
+                    tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
+                } else if (dataSourceSubSelected == DATASOURCE_ROW_SCHEME) {
+                    AdsbClient::setCustomUseHttps(!AdsbClient::customUseHttps());
+                    tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
+                }
             }
         }
 
         if (hasEnter) {
-            switch (dataSourceSubSelected) {
-                case 0: {
-                    bool nowCustom = AdsbClient::currentDataSource() == AdsbClient::DataSource::CustomTar1090;
-                    AdsbClient::setDataSource(nowCustom ? AdsbClient::DataSource::AdsbFi
-                                                         : AdsbClient::DataSource::CustomTar1090);
-                    tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
-                    break;
-                }
-                case 1:
-                    tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
-                    startHostEntry();
-                    break;
-                case 2:
-                    tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
-                    startPortEntry();
-                    break;
-                default: break;
+            if (dataSourceSubSelected == DATASOURCE_ROW_SOURCE) {
+                AdsbClient::setDataSource(nextDataSource(AdsbClient::currentDataSource()));
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+            } else if (dataSourceSubSelected == DATASOURCE_ROW_HOST) {
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                startHostEntry();
+            } else if (dataSourceSubSelected == DATASOURCE_ROW_PORT) {
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                startPortEntry();
+            } else if (dataSourceSubSelected == DATASOURCE_ROW_SCHEME) {
+                AdsbClient::setCustomUseHttps(!AdsbClient::customUseHttps());
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+            } else if (dataSourceSubSelected == DATASOURCE_ROW_TEST) {
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                connTestState = ConnTestState::Testing;
+                // Force an immediate redraw so "Testing..." is visible
+                // before the blocking call below - handleWord() and
+                // render() are otherwise only called from separate points
+                // in main.cpp's loop(), so without this the screen would
+                // just look frozen for the whole test duration instead of
+                // showing what's happening.
+                render();
+                AdsbClient::ConnectionTestResult testResult = AdsbClient::testCustomConnection();
+                connTestState = testResult.ok ? ConnTestState::Ok : ConnTestState::Failed;
+                strncpy(connTestMsg, testResult.message, sizeof(connTestMsg) - 1);
+                connTestMsg[sizeof(connTestMsg) - 1] = '\0';
+                tone(testResult.ok ? TONE_CONFIRM_HZ : TONE_CLOSE_HZ, TONE_CONFIRM_MS);
             }
         }
         return;
@@ -930,7 +975,7 @@ void render() {
 
         d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
         d.setCursor(4, 48);
-        d.println("Hostname or IP, e.g. 10.10.1.93");
+        d.println("Hostname or IP, e.g. 192.168.0.120");
         d.println("Enter: set  Del: back  `: cancel");
 
         d.pushSprite(0, 0);
@@ -960,21 +1005,48 @@ void render() {
     }
 
     if (inDataSourceSubscreen) {
-        bool isCustom = AdsbClient::currentDataSource() == AdsbClient::DataSource::CustomTar1090;
-
         char row0[32];
-        snprintf(row0, sizeof(row0), " Source: %s", isCustom ? "Custom" : "adsb.fi");
+        snprintf(row0, sizeof(row0), " Source: %s",
+                 dataSourceLabel(AdsbClient::currentDataSource()));
 
-        char row1[40];
+        char row1[48];
         const char* host = AdsbClient::customHost();
         snprintf(row1, sizeof(row1), " Host: %s", host[0] ? host : "(not set)");
 
         char row2[32];
         snprintf(row2, sizeof(row2), " Port: %u", AdsbClient::customPort());
 
-        const char* rows[DATASOURCE_SUB_ROWS] = { row0, row1, row2 };
+        char row3[32];
+        snprintf(row3, sizeof(row3), " Scheme: %s", AdsbClient::customUseHttps() ? "HTTPS" : "HTTP");
+
+        char row4[32] = " Test Connection";
+
+        const char* rows[DATASOURCE_SUB_ROWS] = { row0, row1, row2, row3, row4 };
         renderSubscreenRows(d, "Data Source", rows, DATASOURCE_SUB_ROWS, dataSourceSubSelected,
-                             ";/.=move Ent=set `=back");
+                             ";/.=move Ent/,//=set `=back");
+
+        // Test result shown below the row list, same treatment as
+        // Location's current-coordinates line and Prox Beep's AMSL note.
+        d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+        d.setCursor(4, 28 + DATASOURCE_SUB_ROWS * (d.fontHeight() + 2) + 4);
+        switch (connTestState) {
+            case ConnTestState::Testing:
+                d.print(" Testing...");
+                break;
+            case ConnTestState::Ok:
+                d.setTextColor(TFT_GREEN, TFT_BLACK);
+                d.printf(" %s", connTestMsg);
+                break;
+            case ConnTestState::Failed:
+                d.setTextColor(TFT_RED, TFT_BLACK);
+                d.printf(" %s", connTestMsg);
+                break;
+            default:
+                d.print(" (untested)");
+                break;
+        }
+
+        d.pushSprite(0, 0);
         return;
     }
 
@@ -1123,9 +1195,7 @@ void render() {
                 }
                 break;
             case Item::DataSource:
-                d.printf("Data Source: %s",
-                         AdsbClient::currentDataSource() == AdsbClient::DataSource::CustomTar1090
-                             ? "Custom" : "adsb.fi");
+                d.printf("Data Source: %s", dataSourceLabel(AdsbClient::currentDataSource()));
                 break;
             case Item::Units:
                 d.printf("Units: %s/%s", Units::distSuffix(), Units::altSuffix());

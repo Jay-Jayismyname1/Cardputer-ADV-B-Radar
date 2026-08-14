@@ -11,34 +11,55 @@ namespace AdsbClient {
         int      httpCode = 0;
     };
 
-    // Where fetch() gets its data from - the public opendata.adsb.fi API
-    // (default, unchanged behavior), or a user-supplied tar1090/readsb
-    // instance of their own (plain HTTP, host:port they configure in
-    // Settings). Both sources are parsed by the same shared field-extraction
-    // logic - see adsb_client.cpp - since the per-aircraft JSON fields are
-    // identical between the two; only the transport, URL, and top-level
-    // array key ("ac" vs "aircraft") differ.
-    enum class DataSource : uint8_t { AdsbFi = 0, CustomTar1090 = 1 };
+    // Where fetch() gets its data from. AdsbFi/AdsbLol/AirplanesLive are all
+    // free, hosted APIs with an identical "ac"-array JSON shape and a
+    // lat/lon/radius query (just different host + URL shape), sharing one
+    // parsing path. CustomTar1090 is a user-supplied tar1090/readsb instance
+    // of their own (host:port + http/https they configure in Settings),
+    // whose /data/aircraft.json has a different array key ("aircraft") and
+    // no server-side range filtering - see adsb_client.cpp for how that's
+    // handled. Every source shares the same per-aircraft field-extraction
+    // logic (AdsbClient::parseAircraftFeed()) since the field names
+    // themselves are identical across all four.
+    enum class DataSource : uint8_t { AdsbFi = 0, AdsbLol = 1, AirplanesLive = 2, CustomTar1090 = 3 };
 
-    // Loads the persisted data-source selection/host/port. Call once from
-    // setup(), same as every other module's init().
+    // Loads the persisted data-source selection/host/port/scheme. Call once
+    // from setup(), same as every other module's init().
     void init();
 
     void setDataSource(DataSource src);
     DataSource currentDataSource();
 
-    // Host (hostname or IP, no scheme/port) and port for CustomTar1090.
-    // Ignored while AdsbFi is selected. Both persist immediately on set.
+    // Host (hostname or IP, no scheme/port), port, and scheme for
+    // CustomTar1090. Ignored while any hosted API is selected. All persist
+    // immediately on set.
     void setCustomHost(const char* host);
     const char* customHost();
     void setCustomPort(uint16_t port);
     uint16_t customPort();
+    void setCustomUseHttps(bool useHttps);
+    bool customUseHttps();
+
+    struct ConnectionTestResult {
+        bool ok = false;
+        int  httpCode = 0;
+        char message[40] = "";
+    };
+
+    // Synchronous (blocking) connectivity check against the currently
+    // configured CustomTar1090 host/port/scheme - GETs the small
+    // /data/receiver.json and confirms the response actually looks like a
+    // readsb/tar1090 instance (not just "some webserver that returned 200").
+    // Deliberately blocking, same as this app's existing WiFi-scan settings
+    // flow - it's a one-shot user-initiated action from the Settings menu,
+    // not something in the render loop.
+    ConnectionTestResult testCustomConnection();
 
     // Original blocking fetch - now only called internally by the
     // background task below. Calling this directly from loop() is what
     // caused the ~1-3s UI stutter every FETCH_INTERVAL_MS (TLS handshake +
     // HTTP GET + JSON parse all block whichever core calls it). Dispatches
-    // to the adsb.fi or tar1090 implementation based on currentDataSource().
+    // to whichever source currentDataSource() currently selects.
     FetchResult fetch(double homeLat, double homeLon, float radiusKm,
                        Aircraft* table, uint8_t tableCapacity);
 
