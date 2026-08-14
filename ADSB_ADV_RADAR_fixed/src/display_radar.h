@@ -15,4 +15,11 @@ namespace DisplayRadar {
     float currentRangeKm();
     float currentSweepAngle();
 
+    // Display rotation - reorients the whole radar so "up" doesn't have to
+    // mean North, e.g. setRotationDeg(135) puts South-East at the top.
+    // Persisted across reboots; degrees are always normalized to [0, 360).
+    void setRotationDeg(uint16_t deg);
+    void cycleRotation(int16_t stepDeg); // stepDeg may be negative
+    uint16_t currentRotationDeg();
+
 }

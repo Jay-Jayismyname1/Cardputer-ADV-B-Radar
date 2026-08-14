@@ -4,6 +4,7 @@
 #include <unity.h>
 #include "../../src/unit_math.h"
 #include "../../src/alert_filter.h"
+#include "../../src/radar_math.h"
 
 void setUp() {}
 void tearDown() {}
@@ -36,6 +37,30 @@ void test_knots_to_kmh() {
 
 void test_knots_to_mph() {
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 115.078f, UnitMath::knotsToMph(100.0f));
+}
+
+// --- RadarMath::applyRotation ---------------------------------------------
+
+void test_rotation_zero_is_identity() {
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 42.0f, RadarMath::applyRotation(42.0f, 0.0f));
+}
+
+void test_rotation_matching_bearing_becomes_zero() {
+    // The user's own example: entering rotation=135 should make an
+    // aircraft that's actually bearing 135 (south-east) render at the top
+    // of the screen (effective bearing 0).
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, RadarMath::applyRotation(135.0f, 135.0f));
+}
+
+void test_rotation_wraps_below_zero() {
+    // bearing 10, rotated by 350 -> (10 - 350) wraps up to 20, not -340.
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 20.0f, RadarMath::applyRotation(10.0f, 350.0f));
+}
+
+void test_rotation_north_indicator_position() {
+    // Where True North (bearing 0) ends up on screen at a given rotation -
+    // same call the "N" indicator uses.
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 225.0f, RadarMath::applyRotation(0.0f, 135.0f));
 }
 
 // --- AlertFilter ----------------------------------------------------------
@@ -75,6 +100,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_zero_conversions_are_zero);
     RUN_TEST(test_knots_to_kmh);
     RUN_TEST(test_knots_to_mph);
+
+    RUN_TEST(test_rotation_zero_is_identity);
+    RUN_TEST(test_rotation_matching_bearing_becomes_zero);
+    RUN_TEST(test_rotation_wraps_below_zero);
+    RUN_TEST(test_rotation_north_indicator_position);
 
     RUN_TEST(test_alert_within_both_thresholds);
     RUN_TEST(test_alert_boundary_values_are_inclusive);

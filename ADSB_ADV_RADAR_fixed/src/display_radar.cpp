@@ -15,6 +15,7 @@ namespace {
 
     Preferences prefs;
     uint8_t rangeIndex = Config::DEFAULT_RANGE_INDEX;
+    uint16_t rotationDeg = 0; // 0 = North-up (default/unrotated)
 
     uint16_t altitudeColor(int32_t altFt) {
         if (altFt < Config::COLOR_LOW_ALT_THRESHOLD_FT) return TFT_YELLOW;
@@ -33,21 +34,37 @@ namespace {
         radarSprite.drawFastHLine(centerX - outerRadiusPx, centerY, outerRadiusPx * 2, TFT_DARKGREEN);
         radarSprite.drawFastVLine(centerX, centerY - outerRadiusPx, outerRadiusPx * 2, TFT_DARKGREEN);
 
-        // Heading ring - only E/W at the sides now. N/S (top/bottom) were
-        // dropped so the circle can use the vertical space they used to
-        // reserve (see the smaller margin in init()) - screen is wider
-        // than it is tall, so the horizontal E/W labels were never the
-        // binding constraint on radius anyway.
+        // Heading ring. N/S (top/bottom) were dropped so the circle can use
+        // the vertical space they used to reserve (see the smaller margin
+        // in init()) - screen is wider than it is tall, so the horizontal
+        // E/W labels were never the binding constraint on radius anyway.
         radarSprite.setTextColor(TFT_DARKGREEN);
         radarSprite.setTextDatum(middle_center);
-        constexpr struct { int deg; const char* label; } COMPASS_POINTS[] = {
-            { 90, "E" }, { 270, "W" }
-        };
-        for (const auto& cp : COMPASS_POINTS) {
-            double rad = cp.deg * DEG_TO_RAD;
+
+        if (rotationDeg == 0) {
+            // Default, unrotated view - fixed E/W at the sides.
+            constexpr struct { int deg; const char* label; } COMPASS_POINTS[] = {
+                { 90, "E" }, { 270, "W" }
+            };
+            for (const auto& cp : COMPASS_POINTS) {
+                double rad = cp.deg * DEG_TO_RAD;
+                int16_t lx = centerX + (outerRadiusPx + 10) * sin(rad);
+                int16_t ly = centerY - (outerRadiusPx + 10) * cos(rad);
+                radarSprite.drawString(cp.label, lx, ly);
+            }
+        } else {
+            // Rotated view - fixed E/W screen slots would generally no
+            // longer land on an actual cardinal direction (e.g. a 135°
+            // rotation puts True North at a diagonal, not aligned with any
+            // fixed slot), so instead draw a single "N" marker at whichever
+            // screen angle True North currently maps to - same convention
+            // "heading up" GPS navigation UIs use, and the same
+            // bearing-to-screen transform every aircraft blip already uses.
+            float northScreenAngle = RadarMath::applyRotation(0.0f, (float)rotationDeg);
+            double rad = northScreenAngle * DEG_TO_RAD;
             int16_t lx = centerX + (outerRadiusPx + 10) * sin(rad);
             int16_t ly = centerY - (outerRadiusPx + 10) * cos(rad);
-            radarSprite.drawString(cp.label, lx, ly);
+            radarSprite.drawString("N", lx, ly);
         }
     }
 
@@ -95,13 +112,21 @@ namespace {
     }
 
     void drawAircraftBlip(const Aircraft& a, bool selected) {
-        RadarMath::PolarCoord polar{a.distanceKm, a.bearingDeg};
+        // Both the blip's position and its heading arrow are real-world
+        // compass bearings, so both need the same display-rotation offset
+        // applied - otherwise a plane actually flying north would still
+        // point its arrow "up" even on a rotated display, which would look
+        // wrong relative to everything else on screen.
+        float screenBearing = RadarMath::applyRotation(a.bearingDeg, (float)rotationDeg);
+        float screenHeading = RadarMath::applyRotation(a.headingDeg, (float)rotationDeg);
+
+        RadarMath::PolarCoord polar{a.distanceKm, screenBearing};
         auto pt = RadarMath::toScreen(polar, centerX, centerY, outerRadiusPx,
                                        Config::RANGE_STEPS_KM[rangeIndex]);
 
         bool emergency = a.isEmergencySquawk();
         uint16_t color = emergency ? TFT_RED : altitudeColor(a.altBaroFt);
-        drawHeadingArrow(pt.x, pt.y, a.headingDeg, color, selected);
+        drawHeadingArrow(pt.x, pt.y, screenHeading, color, selected);
 
         if (emergency) {
             // Pulsing red ring so an emergency aircraft stands out at a
@@ -271,6 +296,9 @@ void init() {
     prefs.begin("adsb_radar", false);
     rangeIndex = prefs.getUChar("rangeIdx", Config::DEFAULT_RANGE_INDEX);
     if (rangeIndex >= Config::RANGE_STEP_COUNT) rangeIndex = Config::DEFAULT_RANGE_INDEX;
+
+    rotationDeg = prefs.getUShort("radarRotDeg", 0);
+    rotationDeg %= 360;
 }
 
 void tickSweep(uint32_t deltaMs) {
@@ -285,6 +313,22 @@ void cycleRange() {
 
 float currentRangeKm() {
     return Config::RANGE_STEPS_KM[rangeIndex];
+}
+
+void setRotationDeg(uint16_t deg) {
+    rotationDeg = deg % 360;
+    prefs.putUShort("radarRotDeg", rotationDeg);
+}
+
+void cycleRotation(int16_t stepDeg) {
+    // Wrap into [0, 360) - stepDeg may be negative (rotating the other way).
+    int32_t next = (static_cast<int32_t>(rotationDeg) + stepDeg) % 360;
+    if (next < 0) next += 360;
+    setRotationDeg(static_cast<uint16_t>(next));
+}
+
+uint16_t currentRotationDeg() {
+    return rotationDeg;
 }
 
 float currentSweepAngle() {

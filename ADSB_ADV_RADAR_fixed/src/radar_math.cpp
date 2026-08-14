@@ -46,4 +46,10 @@ ScreenPoint toScreen(const PolarCoord& polar, int16_t centerX, int16_t centerY,
     };
 }
 
+float applyRotation(float bearingDeg, float rotationDeg) {
+    float result = fmodf(bearingDeg - rotationDeg, 360.0f);
+    if (result < 0.0f) result += 360.0f;
+    return result;
+}
+
 } // namespace RadarMath

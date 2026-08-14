@@ -7,6 +7,7 @@
 #include "location_manager.h"
 #include "units.h"
 #include "flight_logbook.h"
+#include "display_radar.h"
 #include "config.h"
 #include <M5Cardputer.h>
 #include <Preferences.h>
@@ -35,7 +36,7 @@ namespace {
 
     void tone(uint16_t hz, uint16_t ms) { M5Cardputer.Speaker.tone(hz, ms); }
 
-    enum class Item : uint8_t { Wifi = 0, Location, Units, ProxBeep, DisplayBrightness, LedBrightness, Volume, Logbook, Count };
+    enum class Item : uint8_t { Wifi = 0, Location, Units, ProxBeep, DisplayBrightness, RadarRotation, LedBrightness, Volume, Logbook, Count };
     Item selected = Item::Wifi;
 
     // How many item rows are scrolled past the top of the visible list -
@@ -53,6 +54,14 @@ namespace {
     char manualLonBuf[16] = "";
     uint8_t manualLatLen = 0;
     uint8_t manualLonLen = 0;
+
+    // Radar rotation: an inline slider on the main list (like Display/LED
+    // brightness) for quick coarse steps, plus an exact-value entry mode
+    // (same "m" convention as Location's manual lat/lon) for precise input.
+    constexpr int16_t ROTATION_STEP_DEG = 15;
+    bool inRotationManualEntry = false;
+    char rotationBuf[4] = ""; // "0".."359"
+    uint8_t rotationLen = 0;
 
     // Location sub-screen: row 0 is always the GPS on/off toggle. Row 1 is
     // context-sensitive - the GPS pin-pair cycler while GPS is on, or the
@@ -104,6 +113,12 @@ namespace {
         inManualLocationEntry = true;
     }
 
+    void startRotationManualEntry() {
+        rotationLen = snprintf(rotationBuf, sizeof(rotationBuf), "%u",
+                                 DisplayRadar::currentRotationDeg());
+        inRotationManualEntry = true;
+    }
+
     // Shared by both the main list's Location row and the Location
     // sub-screen's Source row - "manual" reflects the user's persisted
     // preference (LocationManager::SourcePref), not just whatever the
@@ -143,6 +158,7 @@ void onEnter() {
     inLocationSubscreen = false;
     inUnitsSubscreen = false;
     inProxBeepSubscreen = false;
+    inRotationManualEntry = false;
     done = false;
 }
 
@@ -202,6 +218,50 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
             if (allowed && len < bufCap - 1) {
                 buf[len++] = c;
                 buf[len] = '\0';
+            }
+        }
+        return;
+    }
+
+    if (inRotationManualEntry) {
+        bool hasEnter = false, hasEsc = false, hasBackspace = false;
+        for (uint8_t i = 0; i < hidKeyCount; i++) {
+            if (hidKeys[i] == HID_ENTER) hasEnter = true;
+            if (hidKeys[i] == HID_ESC) hasEsc = true;
+            if (hidKeys[i] == HID_BACKSPACE) hasBackspace = true;
+        }
+        bool hasBacktick = false;
+        for (uint8_t i = 0; i < count; i++) if (chars[i] == '`') hasBacktick = true;
+
+        if (hasEsc || hasBacktick) { // cancel, discard edits
+            tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
+            inRotationManualEntry = false;
+            return;
+        }
+
+        if (hasBackspace) {
+            if (rotationLen > 0) { rotationLen--; rotationBuf[rotationLen] = '\0'; tone(TONE_ADJUST_HZ, TONE_ADJUST_MS); }
+            return;
+        }
+
+        if (hasEnter) {
+            long deg = atol(rotationBuf);
+            if (rotationLen > 0 && deg >= 0 && deg <= 359) {
+                DisplayRadar::setRotationDeg(static_cast<uint16_t>(deg));
+                tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+                inRotationManualEntry = false;
+            } else {
+                // Invalid/empty — low buzz, stay in the field to fix it.
+                tone(TONE_CLOSE_HZ, TONE_CLOSE_MS);
+            }
+            return;
+        }
+
+        for (uint8_t i = 0; i < count; i++) {
+            char c = chars[i];
+            if (c >= '0' && c <= '9' && rotationLen < sizeof(rotationBuf) - 1) {
+                rotationBuf[rotationLen++] = c;
+                rotationBuf[rotationLen] = '\0';
             }
         }
         return;
@@ -458,6 +518,9 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                     NeopixelStatus::setBrightnessPercent(
                         min(100, NeopixelStatus::getBrightnessPercent() + 10));
                     break;
+                case Item::RadarRotation:
+                    DisplayRadar::cycleRotation(ROTATION_STEP_DEG);
+                    break;
                 case Item::Volume:
                     VolumeControl::increase();
                     break;
@@ -474,6 +537,9 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                     prefs.putUChar("dispBright", displayBrightnessPercent);
                     applyDisplayBrightness();
                     break;
+                case Item::RadarRotation:
+                    DisplayRadar::cycleRotation(-ROTATION_STEP_DEG);
+                    break;
                 case Item::LedBrightness:
                     NeopixelStatus::setBrightnessPercent(
                         max(0, NeopixelStatus::getBrightnessPercent() - 10));
@@ -487,6 +553,11 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                 default: break;
             }
             tone(TONE_ADJUST_HZ, TONE_ADJUST_MS);
+        } else if (chars[i] == 'm' && selected == Item::RadarRotation) {
+            // Same "m" convention as Location's manual lat/lon entry - an
+            // exact-value alternative to the coarse +/-15° slider above.
+            tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
+            startRotationManualEntry();
         }
     }
 
@@ -636,6 +707,28 @@ void render() {
         d.setCursor(4, 66);
         d.println("Digits, - and . only");
         d.println("Enter: next  Del: back  `: cancel");
+
+        d.pushSprite(0, 0);
+        return;
+    }
+
+    if (inRotationManualEntry) {
+        d.fillScreen(TFT_BLACK);
+        d.setTextSize(1);
+        d.setTextDatum(top_left);
+        d.setTextColor(TFT_GREEN);
+        d.setCursor(4, 4);
+        d.println("Radar rotation");
+        d.drawFastHLine(0, 20, d.width(), TFT_DARKGREEN);
+
+        d.setTextColor(TFT_BLACK, TFT_GREEN);
+        d.setCursor(4, 28);
+        d.printf(" %s_ \n", rotationBuf);
+
+        d.setTextColor(TFT_DARKGREEN, TFT_BLACK);
+        d.setCursor(4, 48);
+        d.println("Degrees, 0-359");
+        d.println("Enter: set  Del: back  `: cancel");
 
         d.pushSprite(0, 0);
         return;
@@ -794,6 +887,12 @@ void render() {
             case Item::DisplayBrightness:
                 d.printf("Display: %d%%", displayBrightnessPercent);
                 break;
+            case Item::RadarRotation:
+                // Plain "deg" rather than a real degree glyph - this GLCD
+                // font isn't guaranteed to have one, same reasoning as
+                // every other unit label in this UI staying plain ASCII.
+                d.printf("Rotation: %u deg", DisplayRadar::currentRotationDeg());
+                break;
             case Item::LedBrightness:
                 d.printf("LED: %d%%", NeopixelStatus::getBrightnessPercent());
                 break;
@@ -830,6 +929,8 @@ void render() {
     if (selected == Item::Wifi || selected == Item::Location ||
         selected == Item::Units || selected == Item::ProxBeep) {
         d.print(";/.=move Ent=open");
+    } else if (selected == Item::RadarRotation) {
+        d.print(";/.=move ,//=adjust m=exact");
     } else {
         d.print(";/.=move ,//=adjust");
     }
