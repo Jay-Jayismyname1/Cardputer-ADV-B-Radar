@@ -266,8 +266,8 @@ namespace {
 
         HTTPClient http;
         http.setTimeout(Config::HTTP_TIMEOUT_MS);
+        http.useHTTP10(true); 
         if (!http.begin(persistentClient, url)) return result;
-        http.setReuse(true);
 
         int code = http.GET();
         result.httpCode = code;
@@ -323,6 +323,7 @@ namespace {
 
         HTTPClient http;
         http.setTimeout(Config::HTTP_TIMEOUT_MS);
+        http.useHTTP10(true); 
 
         bool began;
         WiFiClient plainClient;
@@ -428,8 +429,7 @@ void setCustomUseHttps(bool useHttps) {
 bool customUseHttps() { return customUseHttpsVal; }
 
 ConnectionTestResult testCustomConnection() {
-    ConnectionTestResult result;
-
+    ConnectionTestResult result;  
     if (WiFi.status() != WL_CONNECTED) {
         strncpy(result.message, "WiFi not connected", sizeof(result.message) - 1);
         return result;
@@ -446,6 +446,7 @@ ConnectionTestResult testCustomConnection() {
 
     HTTPClient http;
     http.setTimeout(Config::HTTP_TIMEOUT_MS);
+    http.useHTTP10(true); 
 
     // Deliberately local, throwaway clients here rather than the shared
     // persistentClient the background fetch task uses - this is called
@@ -523,6 +524,7 @@ namespace {
 
         HTTPClient http;
         http.setTimeout(Config::HTTP_TIMEOUT_MS);
+        http.useHTTP10(true);
         WiFiClientSecure testClient;
         testClient.setInsecure();
         testClient.setTimeout(Config::HTTP_TIMEOUT_MS);
@@ -536,6 +538,7 @@ namespace {
         result.httpCode = code;
 
         if (code != HTTP_CODE_OK) {
+            Serial.printf("HTTP %d: %.200s\n", code, http.getString().c_str());
             http.end();
             snprintf(result.message, sizeof(result.message), "Failed (HTTP %d)", code);
             return result;
