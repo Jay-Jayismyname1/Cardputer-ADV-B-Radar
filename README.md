@@ -1,5 +1,5 @@
 <img width="6804" height="4390" alt="20260804_110256" src="https://github.com/user-attachments/assets/b7baaccf-47d1-4f10-a167-03332592544b" />
-# Cardputer-ABS-B-Radar
+# Cardputer-ADV-B-Radar
 A flight tracking firmware for the Cardputer ADV, with proximity alerts
 
 No GPS or external modules are required, this works on Wifi with the adsb.fi API, external modules can be used for precise tracking but they have not been tested due to lack of equipment
