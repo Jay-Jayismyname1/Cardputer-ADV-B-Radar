@@ -1,8 +1,10 @@
 #include "adsb_client.h"
+#include "radar_math.h"
 #include <WiFiClientSecure.h>
 #include <WiFiClient.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <time.h>
 #include <cstdint>
 #include <freertos/FreeRTOS.h>
@@ -24,6 +26,21 @@ namespace {
     // session/connection be reused where the server supports it.
     WiFiClientSecure persistentClient;
     bool clientConfigured = false;
+
+    // --- Data source (hosted APIs vs. user's own tar1090/readsb) ----------
+    Preferences prefs;
+    DataSource dataSource = DataSource::AdsbFi;
+    char customHostBuf[Config::TAR1090_HOST_MAX_LEN] = "";
+    uint16_t customPortVal = Config::DEFAULT_TAR1090_PORT;
+    bool customUseHttpsVal = false;
+
+    // Single source of truth for each hosted API's URL shape, shared by
+    // both the real fetch (fetchAdsbFi/fetchAdsbLol/fetchAirplanesLive) and
+    // the lightweight reachability probe (testHostedApi) below, so the two
+    // can't drift apart.
+    constexpr const char* ADSB_FI_PATH_FMT        = "/api/v3/lat/%.5f/lon/%.5f/dist/%.0f";
+    constexpr const char* ADSB_LOL_PATH_FMT       = "/v2/lat/%.5f/lon/%.5f/dist/%.0f";
+    constexpr const char* AIRPLANES_LIVE_PATH_FMT = "/v2/point/%.5f/%.5f/%.0f";
 
     // --- Background task state --------------------------------------------
     // The fetch task runs on core 0 and writes into workTable/workResult.
@@ -94,94 +111,15 @@ namespace {
 
         return doc["offset"] | OFFSET_LOOKUP_FAILED;
     }
-}
 
-void primeTime() {
-    // First get a roughly-correct UTC clock running via NTP, so there's
-    // *a* valid time even if the timezone lookup below fails or times out.
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    time_t now = time(nullptr);
-    uint32_t start = millis();
-    while (now < 8 * 3600 * 2 && millis() - start < 5000) {
-        delay(100);
-        now = time(nullptr);
-    }
+    // --- Shared aircraft-feed parsing (adsb.fi and tar1090) ----------------
+    // Every field extracted below has the identical name in both adsb.fi's
+    // "ac" array and tar1090/readsb's "aircraft" array - confirmed against
+    // live tar1090 data during research. Only the transport, URL and this
+    // top-level array key actually differ between the two sources, so both
+    // fetch paths share this same parsing logic.
 
-    // Then look up this device's actual local UTC offset (via IP
-    // geolocation, same service already used for home location) and
-    // re-sync the clock with it, so timestamps show local time instead of
-    // UTC. If the lookup fails for any reason, time simply stays in UTC -
-    // still valid and internally consistent, just not localized.
-    int32_t offsetSec = fetchUtcOffsetSeconds();
-    if (offsetSec != OFFSET_LOOKUP_FAILED) {
-        configTime(offsetSec, 0, "pool.ntp.org", "time.nist.gov");
-    }
-}
-
-FetchResult fetch(double homeLat, double homeLon, float radiusKm,
-                   Aircraft* table, uint8_t tableCapacity) {
-    FetchResult result;
-
-    if (WiFi.status() != WL_CONNECTED) {
-        return result;
-    }
-
-    if (!clientConfigured) {
-        persistentClient.setInsecure();
-        persistentClient.setTimeout(Config::HTTP_TIMEOUT_MS);
-        clientConfigured = true;
-    }
-
-    HTTPClient http;
-    char url[160];
-    snprintf(url, sizeof(url),
-             "https://%s/api/v3/lat/%.5f/lon/%.5f/dist/%.0f",
-             Config::ADSB_API_HOST, homeLat, homeLon, radiusKm);
-
-    http.setTimeout(Config::HTTP_TIMEOUT_MS);
-    if (!http.begin(persistentClient, url)) {
-        return result;
-    }
-    http.setReuse(true);
-
-    int code = http.GET();
-    result.httpCode = code;
-
-    if (code != HTTP_CODE_OK) {
-        http.end();
-        return result;
-    }
-    JsonDocument filter;
-    JsonObject filterAc = filter["ac"].add<JsonObject>();
-    filterAc["hex"]      = true;
-    filterAc["flight"]   = true;
-    filterAc["r"]        = true;   // registration
-    filterAc["t"]        = true;   // type code
-    filterAc["squawk"]   = true;   // transponder code, for emergency (7500/7600/7700) detection
-    filterAc["lat"]      = true;
-    filterAc["lon"]      = true;
-    filterAc["alt_baro"] = true;
-    filterAc["baro_rate"]= true;
-    filterAc["gs"]       = true;
-    filterAc["track"]    = true;
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(
-        doc, http.getStream(), DeserializationOption::Filter(filter));
-
-    http.end();
-
-    if (err) {
-        result.ok = false;
-        return result;
-    }
-
-    JsonArray acArray = doc["ac"].as<JsonArray>();
-    uint8_t idx = 0;
-    for (JsonObject ac : acArray) {
-        if (idx >= tableCapacity) break;
-
-        Aircraft& a = table[idx];
+    void parseAircraftFields(JsonObjectConst ac, Aircraft& a) {
         a = Aircraft{}; // reset
 
         const char* hex = ac["hex"] | "";
@@ -214,13 +152,435 @@ FetchResult fetch(double homeLat, double homeLon, float radiusKm,
 
         a.lastSeenMs = millis();
         a.valid = (a.lat != 0.0f || a.lon != 0.0f);
+    }
 
-        if (a.valid) idx++;
+    // Keeps the nearest `tableCapacity` valid, in-range aircraft seen so
+    // far. Needed because tar1090's /data/aircraft.json has no server-side
+    // range filtering at all (unlike adsb.fi's own radius query) - it
+    // always returns every aircraft the receiver currently sees, which can
+    // be in the hundreds. Applied uniformly to both sources: harmless for
+    // adsb.fi (which rarely returns anywhere near tableCapacity entries
+    // since it's already radius-filtered server-side) and required for
+    // tar1090 so the fixed-size table holds the closest aircraft rather
+    // than whichever ones happened to come first in the feed's array.
+    void considerAircraft(Aircraft* table, uint8_t tableCapacity, uint8_t& count,
+                           const Aircraft& candidate, double homeLat, double homeLon,
+                           float radiusKm) {
+        if (!candidate.valid) return;
+
+        RadarMath::PolarCoord polar =
+            RadarMath::toPolar(homeLat, homeLon, candidate.lat, candidate.lon);
+        if (polar.distanceKm > radiusKm) return;
+
+        if (count < tableCapacity) {
+            table[count] = candidate;
+            // Stashed only so the "replace the farthest" comparison below
+            // has something to compare against - AircraftTable::postFetchUpdate()
+            // recomputes this properly (same inputs) right after consumeResult().
+            table[count].distanceKm = polar.distanceKm;
+            count++;
+            return;
+        }
+
+        uint8_t farthestIdx = 0;
+        float farthestKm = table[0].distanceKm;
+        for (uint8_t i = 1; i < tableCapacity; i++) {
+            if (table[i].distanceKm > farthestKm) {
+                farthestKm = table[i].distanceKm;
+                farthestIdx = i;
+            }
+        }
+        if (polar.distanceKm < farthestKm) {
+            table[farthestIdx] = candidate;
+            table[farthestIdx].distanceKm = polar.distanceKm;
+        }
+    }
+
+    // Parses a JSON aircraft feed from `stream`, filtered to only the
+    // fields parseAircraftFields() reads, keeping the nearest
+    // `tableCapacity` valid aircraft within `radiusKm` of home.
+    // `arrayKey` is "ac" for adsb.fi, "aircraft" for tar1090/readsb.
+    FetchResult parseAircraftFeed(Stream& stream, const char* arrayKey,
+                                   double homeLat, double homeLon, float radiusKm,
+                                   Aircraft* table, uint8_t tableCapacity) {
+        FetchResult result;
+
+        JsonDocument filter;
+        JsonObject filterAc = filter[arrayKey].add<JsonObject>();
+        filterAc["hex"]      = true;
+        filterAc["flight"]   = true;
+        filterAc["r"]        = true;   // registration
+        filterAc["t"]        = true;   // type code
+        filterAc["squawk"]   = true;   // transponder code, for emergency (7500/7600/7700) detection
+        filterAc["lat"]      = true;
+        filterAc["lon"]      = true;
+        filterAc["alt_baro"] = true;
+        filterAc["baro_rate"]= true;
+        filterAc["gs"]       = true;
+        filterAc["track"]    = true;
+
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(
+            doc, stream, DeserializationOption::Filter(filter));
+
+        if (err) {
+            result.ok = false;
+            return result;
+        }
+
+        JsonArray acArray = doc[arrayKey].as<JsonArray>();
+        uint8_t count = 0;
+        for (JsonObject ac : acArray) {
+            Aircraft candidate;
+            parseAircraftFields(ac, candidate);
+            considerAircraft(table, tableCapacity, count, candidate, homeLat, homeLon, radiusKm);
+        }
+
+        result.ok = true;
+        result.aircraftCount = count;
+        return result;
+    }
+
+    // Shared by adsb.fi, adsb.lol and airplanes.live - all three are free,
+    // hosted HTTPS APIs with an identical "ac"-array JSON shape, differing
+    // only in host and how the lat/lon/radius query is shaped into the URL
+    // path (`pathFmt` is a printf format taking (lat, lon, radiusKm) in
+    // that order - confirmed against all three live during research).
+    FetchResult fetchHostedApi(const char* apiHost, const char* pathFmt,
+                                double homeLat, double homeLon, float radiusKm,
+                                Aircraft* table, uint8_t tableCapacity) {
+        FetchResult result;
+
+        if (WiFi.status() != WL_CONNECTED) return result;
+
+        if (!clientConfigured) {
+            persistentClient.setInsecure();
+            persistentClient.setTimeout(Config::HTTP_TIMEOUT_MS);
+            clientConfigured = true;
+        }
+
+        char path[96];
+        snprintf(path, sizeof(path), pathFmt, homeLat, homeLon, radiusKm);
+        char url[192];
+        snprintf(url, sizeof(url), "https://%s%s", apiHost, path);
+
+        HTTPClient http;
+        http.setTimeout(Config::HTTP_TIMEOUT_MS);
+        if (!http.begin(persistentClient, url)) return result;
+        http.setReuse(true);
+
+        int code = http.GET();
+        result.httpCode = code;
+
+        if (code != HTTP_CODE_OK) {
+            http.end();
+            return result;
+        }
+
+        result = parseAircraftFeed(http.getStream(), "ac", homeLat, homeLon, radiusKm,
+                                    table, tableCapacity);
+        result.httpCode = code;
+        http.end();
+        return result;
+    }
+
+    FetchResult fetchAdsbFi(double homeLat, double homeLon, float radiusKm,
+                             Aircraft* table, uint8_t tableCapacity) {
+        return fetchHostedApi(Config::ADSB_API_HOST, ADSB_FI_PATH_FMT,
+                               homeLat, homeLon, radiusKm, table, tableCapacity);
+    }
+
+    FetchResult fetchAdsbLol(double homeLat, double homeLon, float radiusKm,
+                              Aircraft* table, uint8_t tableCapacity) {
+        return fetchHostedApi(Config::ADSB_LOL_HOST, ADSB_LOL_PATH_FMT,
+                               homeLat, homeLon, radiusKm, table, tableCapacity);
+    }
+
+    FetchResult fetchAirplanesLive(double homeLat, double homeLon, float radiusKm,
+                                    Aircraft* table, uint8_t tableCapacity) {
+        // Positional path - lat, lon, dist with no "lat"/"lon"/"dist" literal
+        // segments, unlike the other two hosted APIs.
+        return fetchHostedApi(Config::AIRPLANES_LIVE_HOST, AIRPLANES_LIVE_PATH_FMT,
+                               homeLat, homeLon, radiusKm, table, tableCapacity);
+    }
+
+    // Custom tar1090/readsb instance - either plain HTTP or HTTPS (self-
+    // signed certs accepted, same as the hosted APIs above) depending on
+    // customUseHttpsVal, matching the transport tar1090/readsb instances
+    // actually serve on (confirmed against two live instances during
+    // research - both plain HTTP, but some setups reverse-proxy with TLS).
+    FetchResult fetchTar1090(double homeLat, double homeLon, float radiusKm,
+                              Aircraft* table, uint8_t tableCapacity) {
+        FetchResult result;
+
+        if (WiFi.status() != WL_CONNECTED) return result;
+        if (customHostBuf[0] == '\0') return result; // not configured yet
+
+        char url[192];
+        snprintf(url, sizeof(url), "%s://%s:%u%s",
+                 customUseHttpsVal ? "https" : "http",
+                 customHostBuf, customPortVal, Config::TAR1090_AIRCRAFT_PATH);
+
+        HTTPClient http;
+        http.setTimeout(Config::HTTP_TIMEOUT_MS);
+
+        bool began;
+        WiFiClient plainClient;
+        if (customUseHttpsVal) {
+            if (!clientConfigured) {
+                persistentClient.setInsecure();
+                persistentClient.setTimeout(Config::HTTP_TIMEOUT_MS);
+                clientConfigured = true;
+            }
+            began = http.begin(persistentClient, url);
+        } else {
+            began = http.begin(plainClient, url);
+        }
+        if (!began) return result;
+
+        int code = http.GET();
+        result.httpCode = code;
+
+        if (code != HTTP_CODE_OK) {
+            http.end();
+            return result;
+        }
+
+        result = parseAircraftFeed(http.getStream(), "aircraft", homeLat, homeLon, radiusKm,
+                                    table, tableCapacity);
+        result.httpCode = code;
+        http.end();
+        return result;
+    }
+}
+
+void primeTime() {
+    // First get a roughly-correct UTC clock running via NTP, so there's
+    // *a* valid time even if the timezone lookup below fails or times out.
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    time_t now = time(nullptr);
+    uint32_t start = millis();
+    while (now < 8 * 3600 * 2 && millis() - start < 5000) {
+        delay(100);
+        now = time(nullptr);
+    }
+
+    // Then look up this device's actual local UTC offset (via IP
+    // geolocation, same service already used for home location) and
+    // re-sync the clock with it, so timestamps show local time instead of
+    // UTC. If the lookup fails for any reason, time simply stays in UTC -
+    // still valid and internally consistent, just not localized.
+    int32_t offsetSec = fetchUtcOffsetSeconds();
+    if (offsetSec != OFFSET_LOOKUP_FAILED) {
+        configTime(offsetSec, 0, "pool.ntp.org", "time.nist.gov");
+    }
+}
+
+void init() {
+    prefs.begin("adsb_radar", false);
+    dataSource = static_cast<DataSource>(
+        prefs.getUChar("dataSrc", static_cast<uint8_t>(DataSource::AdsbFi)));
+
+    String host = prefs.getString("t1090Host", "");
+    strncpy(customHostBuf, host.c_str(), sizeof(customHostBuf) - 1);
+    customHostBuf[sizeof(customHostBuf) - 1] = '\0';
+
+    customPortVal = prefs.getUShort("t1090Port", Config::DEFAULT_TAR1090_PORT);
+    customUseHttpsVal = prefs.getBool("t1090Https", false);
+}
+
+void setDataSource(DataSource src) {
+    dataSource = src;
+    prefs.putUChar("dataSrc", static_cast<uint8_t>(dataSource));
+}
+
+DataSource currentDataSource() { return dataSource; }
+
+const char* currentDataSourceShortLabel() {
+    switch (dataSource) {
+        case DataSource::AdsbLol:       return "LOL";
+        case DataSource::AirplanesLive: return "LIVE";
+        case DataSource::CustomTar1090: return "CSTM";
+        default:                         return "FI";
+    }
+}
+
+void setCustomHost(const char* host) {
+    strncpy(customHostBuf, host, sizeof(customHostBuf) - 1);
+    customHostBuf[sizeof(customHostBuf) - 1] = '\0';
+    prefs.putString("t1090Host", customHostBuf);
+}
+
+const char* customHost() { return customHostBuf; }
+
+void setCustomPort(uint16_t port) {
+    customPortVal = port;
+    prefs.putUShort("t1090Port", customPortVal);
+}
+
+uint16_t customPort() { return customPortVal; }
+
+void setCustomUseHttps(bool useHttps) {
+    customUseHttpsVal = useHttps;
+    prefs.putBool("t1090Https", useHttps);
+}
+
+bool customUseHttps() { return customUseHttpsVal; }
+
+ConnectionTestResult testCustomConnection() {
+    ConnectionTestResult result;
+
+    if (WiFi.status() != WL_CONNECTED) {
+        strncpy(result.message, "WiFi not connected", sizeof(result.message) - 1);
+        return result;
+    }
+    if (customHostBuf[0] == '\0') {
+        strncpy(result.message, "No host configured", sizeof(result.message) - 1);
+        return result;
+    }
+
+    char url[192];
+    snprintf(url, sizeof(url), "%s://%s:%u%s",
+             customUseHttpsVal ? "https" : "http",
+             customHostBuf, customPortVal, Config::TAR1090_RECEIVER_PATH);
+
+    HTTPClient http;
+    http.setTimeout(Config::HTTP_TIMEOUT_MS);
+
+    // Deliberately local, throwaway clients here rather than the shared
+    // persistentClient the background fetch task uses - this is called
+    // synchronously from the Settings UI (main loop, core 1) and must not
+    // touch state the fetch task (core 0) might be using concurrently.
+    bool began;
+    WiFiClient plainClient;
+    WiFiClientSecure secureClient;
+    if (customUseHttpsVal) {
+        secureClient.setInsecure();
+        secureClient.setTimeout(Config::HTTP_TIMEOUT_MS);
+        began = http.begin(secureClient, url);
+    } else {
+        began = http.begin(plainClient, url);
+    }
+
+    if (!began) {
+        strncpy(result.message, "Invalid host/URL", sizeof(result.message) - 1);
+        return result;
+    }
+
+    int code = http.GET();
+    result.httpCode = code;
+
+    if (code != HTTP_CODE_OK) {
+        http.end();
+        snprintf(result.message, sizeof(result.message), "Failed (HTTP %d)", code);
+        return result;
+    }
+
+    // Confirm the response actually looks like a readsb/tar1090
+    // receiver.json - "refresh" (the UI auto-refresh interval, ms) is
+    // present in every version seen during research - rather than just
+    // trusting any 200 OK from whatever's listening on that host:port.
+    JsonDocument filter;
+    filter["version"] = true;
+    filter["refresh"] = true;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(
+        doc, http.getStream(), DeserializationOption::Filter(filter));
+    http.end();
+
+    if (err || !doc["refresh"].is<int>()) {
+        strncpy(result.message, "Not a readsb/tar1090 server", sizeof(result.message) - 1);
+        return result;
     }
 
     result.ok = true;
-    result.aircraftCount = idx;
+    const char* ver = doc["version"] | "";
+    if (ver[0]) {
+        snprintf(result.message, sizeof(result.message), "OK (v%s)", ver);
+    } else {
+        strncpy(result.message, "OK", sizeof(result.message) - 1);
+    }
     return result;
+}
+
+namespace {
+    // Lightweight reachability probe for a hosted API - a minimal query
+    // (null island, 1km radius) rather than a real fetch, just to confirm
+    // the host is up and returns the expected "ac"-shaped JSON. Deliberately
+    // uses its own throwaway client, same reasoning as testCustomConnection().
+    ConnectionTestResult testHostedApi(const char* apiHost, const char* pathFmt) {
+        ConnectionTestResult result;
+
+        if (WiFi.status() != WL_CONNECTED) {
+            strncpy(result.message, "WiFi not connected", sizeof(result.message) - 1);
+            return result;
+        }
+
+        char path[96];
+        snprintf(path, sizeof(path), pathFmt, 0.0, 0.0, 1.0);
+        char url[192];
+        snprintf(url, sizeof(url), "https://%s%s", apiHost, path);
+
+        HTTPClient http;
+        http.setTimeout(Config::HTTP_TIMEOUT_MS);
+        WiFiClientSecure testClient;
+        testClient.setInsecure();
+        testClient.setTimeout(Config::HTTP_TIMEOUT_MS);
+
+        if (!http.begin(testClient, url)) {
+            strncpy(result.message, "Invalid host/URL", sizeof(result.message) - 1);
+            return result;
+        }
+
+        int code = http.GET();
+        result.httpCode = code;
+
+        if (code != HTTP_CODE_OK) {
+            http.end();
+            snprintf(result.message, sizeof(result.message), "Failed (HTTP %d)", code);
+            return result;
+        }
+
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, http.getStream());
+        http.end();
+
+        if (err || !doc["ac"].is<JsonArrayConst>()) {
+            strncpy(result.message, "Unexpected response", sizeof(result.message) - 1);
+            return result;
+        }
+
+        result.ok = true;
+        strncpy(result.message, "OK (reachable)", sizeof(result.message) - 1);
+        return result;
+    }
+}
+
+ConnectionTestResult testCurrentDataSource() {
+    switch (dataSource) {
+        case DataSource::AdsbLol:
+            return testHostedApi(Config::ADSB_LOL_HOST, ADSB_LOL_PATH_FMT);
+        case DataSource::AirplanesLive:
+            return testHostedApi(Config::AIRPLANES_LIVE_HOST, AIRPLANES_LIVE_PATH_FMT);
+        case DataSource::CustomTar1090:
+            return testCustomConnection();
+        default:
+            return testHostedApi(Config::ADSB_API_HOST, ADSB_FI_PATH_FMT);
+    }
+}
+
+FetchResult fetch(double homeLat, double homeLon, float radiusKm,
+                   Aircraft* table, uint8_t tableCapacity) {
+    switch (dataSource) {
+        case DataSource::AdsbLol:
+            return fetchAdsbLol(homeLat, homeLon, radiusKm, table, tableCapacity);
+        case DataSource::AirplanesLive:
+            return fetchAirplanesLive(homeLat, homeLon, radiusKm, table, tableCapacity);
+        case DataSource::CustomTar1090:
+            return fetchTar1090(homeLat, homeLon, radiusKm, table, tableCapacity);
+        default:
+            return fetchAdsbFi(homeLat, homeLon, radiusKm, table, tableCapacity);
+    }
 }
 
 void startBackgroundTask() {
