@@ -54,3 +54,5 @@ Thank you for the support.
 There's a Ko-Fi link if you'd like to donate towards:
 A LoRa cap ✅
 A CC1101 cap
+
+Thanks to  Eiswolf-BG and  aXistem-dev for all the help and making this project what it is.
