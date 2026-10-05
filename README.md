@@ -51,4 +51,6 @@ Or alternatively you can manually compile the .zip file if you would like to mak
 Download and extract the .zip file, open VSCode and click on the platformIO extension, and "Pick a folder", browse your directory until you find the folder and open, look on the bottom left of VSCode until you find a terminal icon and click on it and type "pio run -e m5stack-stamps3" to build the project, navigate to .pio --> build --> m5stack-stamps3 and you will see a file called "firmware.bin" flash it or put it on your SD card.
 
 Thank you for the support.
-There's a Ko-Fi link if you'd like to donate towards a LoRa cap
+There's a Ko-Fi link if you'd like to donate towards:
+A LoRa cap ✅
+A CC1101 cap
