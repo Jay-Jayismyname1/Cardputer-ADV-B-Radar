@@ -222,6 +222,13 @@ namespace {
     M5Canvas settingsSprite(&M5Cardputer.Display);
     bool spriteReady = false;
 
+    // Display brightness (unlike LED brightness) can never be allowed to
+    // reach 0% - that turns the backlight fully off, and since this value
+    // persists across reboots, saving a 0 would leave the device stuck on
+    // a permanently black screen with no way to see the menu and raise it
+    // back up again. 10% keeps it visible at the dimmest setting.
+    constexpr uint8_t MIN_DISPLAY_BRIGHTNESS_PERCENT = 10;
+
     void applyDisplayBrightness() {
         M5Cardputer.Display.setBrightness((displayBrightnessPercent * 255) / 100);
     }
@@ -284,6 +291,13 @@ namespace {
 void init() {
     prefs.begin("adsb_radar", false);
     displayBrightnessPercent = prefs.getUChar("dispBright", 80);
+    // Self-heal: a value saved before MIN_DISPLAY_BRIGHTNESS_PERCENT existed
+    // (or any other way a 0 ended up stored) would otherwise reapply a fully
+    // black screen on every single boot, with no way to see the menu and
+    // raise it back up.
+    if (displayBrightnessPercent < MIN_DISPLAY_BRIGHTNESS_PERCENT) {
+        displayBrightnessPercent = MIN_DISPLAY_BRIGHTNESS_PERCENT;
+    }
 
     // setup() sets a hardcoded 80% before this runs (display needs to be
     // usable before prefs/SD are ready), so the saved percentage was never
@@ -862,7 +876,7 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         } else if (chars[i] == ',') { // left — decrease slider
             switch (selected) {
                 case Item::DisplayBrightness:
-                    displayBrightnessPercent = max(0, displayBrightnessPercent - 10);
+                    displayBrightnessPercent = max<int>(MIN_DISPLAY_BRIGHTNESS_PERCENT, displayBrightnessPercent - 10);
                     displayBrightnessDirty = true;
                     applyDisplayBrightness();
                     break;
