@@ -74,9 +74,11 @@ namespace Config {
 
     constexpr uint8_t NEOPIXEL_PIN   = 21;
     constexpr uint8_t NEOPIXEL_COUNT = 1;
-    // Stamp-S3A (Cardputer-ADV) only: independent power-enable switch for
-    // the RGB LED rail. Must be driven HIGH before the LED will light.
-    constexpr uint8_t NEOPIXEL_POWER_PIN = 38;
+    // GPIO38 - the RGB LED rail's power-enable on Cardputer-ADV - is the
+    // exact same physical pin M5GFX uses for the LCD backlight PWM, not a
+    // separate one. There is no standalone constant for it anymore: see
+    // NeopixelStatus::init(), which drives it through the display's own
+    // brightness call instead of a raw pinMode()/digitalWrite().
 
     constexpr float ZONE_BLUE_KM   = 25.0f;
     constexpr float ZONE_YELLOW_KM = 10.0f;
