@@ -86,6 +86,9 @@ namespace Config {
     constexpr uint32_t FLASH_INTERVAL_MS = 350;
     constexpr uint32_t NEW_CONTACT_RADIUS_KM = 100;
 
-    constexpr uint16_t COLOR_LOW_ALT_THRESHOLD_FT  = 10000; // Fixed overflow
+    // uint16_t (not uint8_t/int8_t) specifically because altitudes up to
+    // 65535ft need to fit without wrapping - a smaller type would overflow
+    // well below any realistic cruising altitude.
+    constexpr uint16_t COLOR_LOW_ALT_THRESHOLD_FT  = 10000;
     constexpr uint16_t COLOR_MID_ALT_THRESHOLD_FT  = 30000;
 }

@@ -191,7 +191,7 @@ void seedDefaultDataFiles() {
 
 void logEvent(const char* csvLine) {
     if (!mounted) {
-        Serial.println("[SD] logEvent: Karte nicht gemountet");
+        Serial.println("[SD] logEvent: card not mounted");
         return;
     }
 
@@ -204,7 +204,7 @@ void logEvent(const char* csvLine) {
 
     File f = SD.open(filename, FILE_APPEND);
     if (!f) {
-        Serial.printf("[SD] logEvent: konnte Datei nicht oeffnen: %s\n", filename);
+        Serial.printf("[SD] logEvent: could not open file: %s\n", filename);
         return;
     }
     f.println(csvLine);
