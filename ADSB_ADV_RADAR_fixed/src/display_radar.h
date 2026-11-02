@@ -18,9 +18,16 @@ namespace DisplayRadar {
 
     // Display rotation - reorients the whole radar so "up" doesn't have to
     // mean North, e.g. setRotationDeg(135) puts South-East at the top.
-    // Persisted across reboots; degrees are always normalized to [0, 360).
+    // Degrees are always normalized to [0, 360).
+    //
+    // setRotationDeg() is a one-shot commit (e.g. manual numeric entry) and
+    // persists to NVS immediately. cycleRotation() is the inline +/- slider
+    // and only updates the in-RAM value - the caller is expected to call
+    // persistRotationDeg() once (e.g. on nav-away or Settings close) rather
+    // than on every step, to avoid a flash write per keypress.
     void setRotationDeg(uint16_t deg);
-    void cycleRotation(int16_t stepDeg); // stepDeg may be negative
+    void cycleRotation(int16_t stepDeg); // stepDeg may be negative, RAM-only
+    void persistRotationDeg(); // flush the current value to NVS
     uint16_t currentRotationDeg();
 
     // The full-screen sprite this module owns, exposed so other screens

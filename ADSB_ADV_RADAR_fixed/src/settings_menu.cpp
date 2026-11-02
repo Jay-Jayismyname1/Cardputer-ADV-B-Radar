@@ -96,6 +96,16 @@ namespace {
     char rotationBuf[4] = ""; // "0".."359"
     uint8_t rotationLen = 0;
 
+    // Display brightness and radar rotation both have an inline +/- slider
+    // on the main list. Writing to NVS on every single step (as opposed to
+    // only once the user is done adjusting) means a held-down adjust key
+    // turns into a flash write per step for no UX benefit. These track
+    // whether either slider has moved since its last flush; flushDirtySliders()
+    // (defined below, once prefs/displayBrightnessPercent are in scope) is
+    // called whenever the selection moves off the item or Settings closes.
+    bool displayBrightnessDirty = false;
+    bool rotationDirty = false;
+
     // Location sub-screen: row 0 is always the Hardware GPS on/off toggle.
     // Row 1 is context-sensitive - the GPS pin-pair cycler while GPS is on,
     // or the IP/Manual "Other Source" toggle while GPS is off. Rows 2/3
@@ -214,6 +224,17 @@ namespace {
 
     void applyDisplayBrightness() {
         M5Cardputer.Display.setBrightness((displayBrightnessPercent * 255) / 100);
+    }
+
+    void flushDirtySliders() {
+        if (displayBrightnessDirty) {
+            prefs.putUChar("dispBright", displayBrightnessPercent);
+            displayBrightnessDirty = false;
+        }
+        if (rotationDirty) {
+            DisplayRadar::persistRotationDeg();
+            rotationDirty = false;
+        }
     }
 
     // field: 0 = lat, 1 = lon. Prefills from the dedicated manual-location
@@ -377,7 +398,8 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
         if (hasEnter) {
             long deg = atol(rotationBuf);
             if (rotationLen > 0 && deg >= 0 && deg <= 359) {
-                DisplayRadar::setRotationDeg(static_cast<uint16_t>(deg));
+                DisplayRadar::setRotationDeg(static_cast<uint16_t>(deg)); // persists immediately, single commit
+                rotationDirty = false;
                 tone(TONE_CONFIRM_HZ, TONE_CONFIRM_MS);
                 inRotationManualEntry = false;
             } else {
@@ -794,14 +816,19 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
     Keys keys = scanKeys(hidKeys, hidKeyCount, chars, count);
     bool hasEnter = keys.enter, hasEsc = keys.esc, hasBacktick = keys.backtick;
 
-    if (hasEsc || hasBacktick) { tone(TONE_CLOSE_HZ, TONE_CLOSE_MS); done = true; return; }
+    if (hasEsc || hasBacktick) {
+        flushDirtySliders();
+        tone(TONE_CLOSE_HZ, TONE_CLOSE_MS); done = true; return;
+    }
 
     for (uint8_t i = 0; i < count; i++) {
         if (chars[i] == ';') { // up
+            flushDirtySliders();
             selected = static_cast<Item>((static_cast<uint8_t>(selected) +
                        static_cast<uint8_t>(Item::Count) - 1) % static_cast<uint8_t>(Item::Count));
             tone(TONE_NAV_HZ, TONE_NAV_MS);
         } else if (chars[i] == '.') { // down
+            flushDirtySliders();
             selected = static_cast<Item>((static_cast<uint8_t>(selected) + 1) %
                        static_cast<uint8_t>(Item::Count));
             tone(TONE_NAV_HZ, TONE_NAV_MS);
@@ -809,7 +836,7 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
             switch (selected) {
                 case Item::DisplayBrightness:
                     displayBrightnessPercent = min(100, displayBrightnessPercent + 10);
-                    prefs.putUChar("dispBright", displayBrightnessPercent);
+                    displayBrightnessDirty = true;
                     applyDisplayBrightness();
                     break;
                 case Item::LedBrightness:
@@ -818,6 +845,7 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
                     break;
                 case Item::RadarRotation:
                     DisplayRadar::cycleRotation(ROTATION_STEP_DEG);
+                    rotationDirty = true;
                     break;
                 case Item::Volume:
                     VolumeControl::increase();
@@ -835,11 +863,12 @@ void handleWord(const char* chars, uint8_t count, bool fnHeld, bool shiftHeld,
             switch (selected) {
                 case Item::DisplayBrightness:
                     displayBrightnessPercent = max(0, displayBrightnessPercent - 10);
-                    prefs.putUChar("dispBright", displayBrightnessPercent);
+                    displayBrightnessDirty = true;
                     applyDisplayBrightness();
                     break;
                 case Item::RadarRotation:
                     DisplayRadar::cycleRotation(-ROTATION_STEP_DEG);
+                    rotationDirty = true;
                     break;
                 case Item::LedBrightness:
                     NeopixelStatus::setBrightnessPercent(
