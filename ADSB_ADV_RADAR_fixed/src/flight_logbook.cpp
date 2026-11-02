@@ -87,7 +87,7 @@ namespace {
         f.close();
 
         if (restored > 0) {
-            Serial.printf("[Logbook] %u bereits heute geloggte Flugzeuge von SD wiederhergestellt\n",
+            Serial.printf("[Logbook] restored %u already-logged-today aircraft from SD\n",
                           restored);
         }
     }
