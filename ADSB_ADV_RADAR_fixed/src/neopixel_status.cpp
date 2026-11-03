@@ -2,6 +2,7 @@
 #include "config.h"
 #include <Adafruit_NeoPixel.h>
 #include <Preferences.h>
+#include <M5Cardputer.h>
 
 namespace NeopixelStatus {
 
@@ -60,14 +61,19 @@ void init() {
     prefs.begin("adsb_radar", false);
     brightnessPercent = prefs.getUChar("ledBright", 90);
 
-    // Cardputer-ADV uses the Stamp-S3A module, which (unlike the older
-    // Stamp-S3) puts the RGB LED behind its own independent power switch
-    // to save power — GPIO38 must be driven HIGH to enable that rail
-    // before anything written to the NeoPixel data pin (G21) actually
-    // lights it up. Without this the pixel is essentially unpowered,
-    // which is why it only "occasionally" flickered before.
-    pinMode(Config::NEOPIXEL_POWER_PIN, OUTPUT);
-    digitalWrite(Config::NEOPIXEL_POWER_PIN, HIGH);
+    // Cardputer-ADV's RGB LED rail power-enable (GPIO38) is NOT actually
+    // independent of the LCD backlight on this hardware - M5GFX drives
+    // the backlight PWM on that exact same pin. A plain pinMode()+
+    // digitalWrite() here (as this used to do) detaches the pin from the
+    // display's LEDC channel for the rest of the session: M5Cardputer.
+    // Display.setBrightness() keeps "succeeding" afterward (it only
+    // writes a duty register) but the physical pin never moves again -
+    // which is why the brightness slider stopped doing anything the
+    // moment this ran. Driving the same rail through the display's own
+    // brightness call instead keeps GPIO38 under LEDC control, so
+    // SettingsMenu::init() (which runs right after this and restores the
+    // user's saved percentage) can still take over the pin correctly.
+    M5Cardputer.Display.setBrightness(255);
 
     pixel.begin();
     pixel.setBrightness((brightnessPercent * 255) / 100);

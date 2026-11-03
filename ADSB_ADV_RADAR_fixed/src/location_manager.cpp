@@ -287,7 +287,11 @@ bool isGpsEnabled() { return gpsEnabled; }
 void cycleGpsPinPair() {
     gpsPinIndex = (gpsPinIndex + 1) % Config::GPS_PIN_CANDIDATE_COUNT;
     prefs.putUChar("gpsPinIdx", gpsPinIndex);
-    gpsSerialStarted = false;
+    // Explicit teardown before switching pins, same as setGpsEnabled(false) -
+    // begin()-ing over an already-started UART without end() first happens
+    // to work on this core today, but relies on that rather than an
+    // explicit contract.
+    stopGpsSerialIfNeeded();
     if (gpsEnabled) startGpsSerialIfNeeded();
 }
 

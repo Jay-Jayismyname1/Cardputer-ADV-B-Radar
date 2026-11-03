@@ -355,14 +355,19 @@ float currentRangeKm() {
 
 void setRotationDeg(uint16_t deg) {
     rotationDeg = deg % 360;
-    prefs.putUShort("radarRotDeg", rotationDeg);
+    persistRotationDeg();
 }
 
 void cycleRotation(int16_t stepDeg) {
     // Wrap into [0, 360) - stepDeg may be negative (rotating the other way).
+    // RAM-only; see display_radar.h for why this doesn't persist here.
     int32_t next = (static_cast<int32_t>(rotationDeg) + stepDeg) % 360;
     if (next < 0) next += 360;
-    setRotationDeg(static_cast<uint16_t>(next));
+    rotationDeg = static_cast<uint16_t>(next);
+}
+
+void persistRotationDeg() {
+    prefs.putUShort("radarRotDeg", rotationDeg);
 }
 
 uint16_t currentRotationDeg() {

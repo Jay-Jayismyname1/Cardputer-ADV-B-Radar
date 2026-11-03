@@ -68,6 +68,14 @@ namespace {
             xSemaphoreTake(startSem, portMAX_DELAY);
             // pendingRequest was fully written by requestFetch() strictly
             // before it gave this semaphore, so it's safe to read here.
+            //
+            // workTable is reused across cycles, and considerAircraft() only
+            // ever writes slots [0, count) - if this cycle sees fewer
+            // aircraft than a busier earlier one, the leftover slots would
+            // keep holding that earlier cycle's entries (stale lastSeenMs
+            // included). Clearing it first means every slot past the new
+            // count is a clean, invalid Aircraft{} instead of a ghost.
+            memset(workTable, 0, sizeof(workTable));
             workResult = fetch(pendingRequest.lat, pendingRequest.lon,
                                 pendingRequest.radiusKm,
                                 workTable, Config::MAX_TRACKED_AIRCRAFT);
@@ -608,9 +616,17 @@ bool resultReady() {
 
 FetchResult consumeResult(Aircraft* outTable, uint8_t outCapacity) {
     FetchResult r = workResult;
-    uint8_t n = outCapacity < Config::MAX_TRACKED_AIRCRAFT
-                    ? outCapacity : Config::MAX_TRACKED_AIRCRAFT;
-    memcpy(outTable, workTable, n * sizeof(Aircraft));
+    // outTable is the live AircraftTable's own backing storage, already
+    // evicted/sorted by the previous postFetchUpdate() call. On a failed
+    // fetch, workTable still holds whatever the last *successful* fetch
+    // left there (pre-eviction, pre-sort) - copying it in unconditionally
+    // would silently undo that eviction/sort and resurrect aircraft the
+    // live table had already dropped. Only overwrite it on success.
+    if (r.ok) {
+        uint8_t n = outCapacity < Config::MAX_TRACKED_AIRCRAFT
+                        ? outCapacity : Config::MAX_TRACKED_AIRCRAFT;
+        memcpy(outTable, workTable, n * sizeof(Aircraft));
+    }
     readyFlag.store(false, std::memory_order_release);
     busyFlag.store(false, std::memory_order_release);
     return r;

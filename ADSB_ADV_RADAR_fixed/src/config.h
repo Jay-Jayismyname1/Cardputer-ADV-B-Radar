@@ -74,9 +74,11 @@ namespace Config {
 
     constexpr uint8_t NEOPIXEL_PIN   = 21;
     constexpr uint8_t NEOPIXEL_COUNT = 1;
-    // Stamp-S3A (Cardputer-ADV) only: independent power-enable switch for
-    // the RGB LED rail. Must be driven HIGH before the LED will light.
-    constexpr uint8_t NEOPIXEL_POWER_PIN = 38;
+    // GPIO38 - the RGB LED rail's power-enable on Cardputer-ADV - is the
+    // exact same physical pin M5GFX uses for the LCD backlight PWM, not a
+    // separate one. There is no standalone constant for it anymore: see
+    // NeopixelStatus::init(), which drives it through the display's own
+    // brightness call instead of a raw pinMode()/digitalWrite().
 
     constexpr float ZONE_BLUE_KM   = 25.0f;
     constexpr float ZONE_YELLOW_KM = 10.0f;
@@ -86,6 +88,9 @@ namespace Config {
     constexpr uint32_t FLASH_INTERVAL_MS = 350;
     constexpr uint32_t NEW_CONTACT_RADIUS_KM = 100;
 
-    constexpr uint16_t COLOR_LOW_ALT_THRESHOLD_FT  = 10000; // Fixed overflow
+    // uint16_t (not uint8_t/int8_t) specifically because altitudes up to
+    // 65535ft need to fit without wrapping - a smaller type would overflow
+    // well below any realistic cruising altitude.
+    constexpr uint16_t COLOR_LOW_ALT_THRESHOLD_FT  = 10000;
     constexpr uint16_t COLOR_MID_ALT_THRESHOLD_FT  = 30000;
 }

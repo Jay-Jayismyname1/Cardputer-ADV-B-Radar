@@ -87,7 +87,7 @@ namespace {
         f.close();
 
         if (restored > 0) {
-            Serial.printf("[Logbook] %u bereits heute geloggte Flugzeuge von SD wiederhergestellt\n",
+            Serial.printf("[Logbook] restored %u already-logged-today aircraft from SD\n",
                           restored);
         }
     }
@@ -136,7 +136,7 @@ void update(const Aircraft* table, uint8_t count) {
     if (!enabled) return;
 
     if (!SdStorage::isMounted()) {
-        Serial.println("[Logbook] SD nicht gemountet, ueberspringe");
+        Serial.println("[Logbook] SD not mounted, skipping");
         return;
     }
 
@@ -153,7 +153,7 @@ void update(const Aircraft* table, uint8_t count) {
         if (!a.valid || a.hex[0] == '\0') continue;
         if (alreadyLoggedToday(a.hex, today)) continue;
 
-        Serial.printf("[Logbook] logge neues Flugzeug: %s\n", a.hex);
+        Serial.printf("[Logbook] logging new aircraft: %s\n", a.hex);
         writeLogLine(t, a);
         rememberInMemory(a.hex, today);
         appendSeenFile(t, a.hex);
